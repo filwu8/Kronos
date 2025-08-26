@@ -24,6 +24,7 @@ except ImportError:
 import json
 from datetime import datetime, timedelta
 import time
+import base64
 
 # 页面配置
 st.set_page_config(
@@ -43,76 +44,44 @@ def load_local_resources():
         (static_dir / "css").mkdir(exist_ok=True)
         (static_dir / "js").mkdir(exist_ok=True)
 
-    # 加载本地CSS
-    css_files = [
-        "static/css/chinese_ui.css",
-        "static/css/local.css"
-    ]
+    # 合并注入：将多个CSS与JS一次性注入，减少顶部容器占位
+    css_bundle = []
+    for css_path in ["static/css/chinese_ui.css", "static/css/local.css"]:
+        p = Path(css_path)
+        if p.exists():
+            css_bundle.append(p.read_text(encoding='utf-8'))
 
-    for css_file in css_files:
-        if Path(css_file).exists():
-            with open(css_file, 'r', encoding='utf-8') as f:
-                st.markdown(f"<style>{f.read()}</style>", unsafe_allow_html=True)
+    js_bundle = []
+    for js_path in ["static/js/chinese_ui.js"]:
+        p = Path(js_path)
+        if p.exists():
+            js_bundle.append(p.read_text(encoding='utf-8'))
 
-    # 加载本地JavaScript
-    js_files = [
-        "static/js/chinese_ui.js"
-    ]
-
-    for js_file in js_files:
-        if Path(js_file).exists():
-            with open(js_file, 'r', encoding='utf-8') as f:
-                st.markdown(f"<script>{f.read()}</script>", unsafe_allow_html=True)
+    # 使用一次 st.markdown 注入，避免 iframe 产生额外占位
+    bundle_html = f"<style>{''.join(css_bundle)}</style>\n<script>{''.join(js_bundle)}</script>"
+    st.markdown(bundle_html, unsafe_allow_html=True)
 
 # 加载本地资源
 load_local_resources()
+
+
+# 读取根目录 logo.png 并返回 data URI，避免静态路径加载失败
+def get_logo_data_uri() -> str:
+    try:
+        p = Path("logo.png")
+        if p.exists():
+            b64 = base64.b64encode(p.read_bytes()).decode('utf-8')
+            return f"data:image/png;base64,{b64}"
+    except Exception:
+        pass
+    return ""
 
 # API配置 - 支持容器内部通信
 import os
 API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 
-# 自定义CSS
-st.markdown("""
-<style>
-    .main-header {
-        font-size: 2.5rem;
-        font-weight: bold;
-        color: #1f77b4;
-        text-align: center;
-        margin-bottom: 2rem;
-    }
-    .metric-card {
-        background-color: #f0f2f6;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 4px solid #1f77b4;
-    }
-    .success-message {
-        color: #28a745;
-        font-weight: bold;
-    }
-    .error-message {
-        color: #dc3545;
-        font-weight: bold;
-    }
-    .warning-message {
-        color: #ffc107;
-        font-weight: bold;
-    }
-    /* 优化Plotly工具栏样式 */
-    .modebar {
-        background-color: rgba(255, 255, 255, 0.9) !important;
-        border-radius: 5px !important;
-        box-shadow: 0 2px 4px rgba(0,0,0,0.1) !important;
-    }
-    .modebar-btn {
-        color: #333 !important;
-    }
-    .modebar-btn:hover {
-        background-color: rgba(0, 123, 255, 0.1) !important;
-    }
-</style>
-""", unsafe_allow_html=True)
+# 自定义CSS合并：移入静态文件或bundle中，避免重复注入容器
+# 注：如需新增样式，建议追加到 static/css/chinese_ui.css 或 static/css/local.css 中
 
 
 def check_api_health():
@@ -131,13 +100,13 @@ def get_stock_prediction(stock_code, **params):
             "stock_code": stock_code,
             **params
         }
-        
+
         response = requests.post(
             f"{API_BASE_URL}/predict",
             json=payload,
             timeout=60
         )
-        
+
         if response.status_code == 200:
             return response.json()
         else:
@@ -400,26 +369,26 @@ def create_price_chart(historical_data, predictions, stock_info):
 def create_metrics_display(summary):
     """创建指标展示"""
     col1, col2, col3, col4 = st.columns(4)
-    
+
     with col1:
         st.metric(
             label="当前价格",
             value=f"¥{summary['current_price']:.2f}"
         )
-    
+
     with col2:
         st.metric(
             label="预测价格",
             value=f"¥{summary['predicted_price']:.2f}",
             delta=f"{summary['change_percent']:.2f}%"
         )
-    
+
     with col3:
         st.metric(
             label="预期变化",
             value=f"¥{summary['change_amount']:.2f}"
         )
-    
+
     with col4:
         trend_color = "🔴" if summary['trend'] == "下跌" else "🟢" if summary['trend'] == "上涨" else "🟡"
         st.metric(
@@ -455,26 +424,43 @@ def main():
 
 def render_stock_prediction_content():
     """渲染股票预测内容"""
-    # 标题
-    st.markdown('<h1 class="main-header">🚀 Gordon Wang 的股票预测系统</h1>', unsafe_allow_html=True)
-    st.markdown('<p style="text-align: center; color: #666; margin-top: -1rem;">基于RTX 5090 GPU加速的智能股票预测平台</p>', unsafe_allow_html=True)
-    
+    # 标题（主副标题作为一个视觉整体且统一居中）
+    logo_uri = get_logo_data_uri()
+    if logo_uri:
+        title_html = (
+            '<div class="title-banner">'
+            '<h1 class="main-header gradient-title glow">'
+            f'<img class="title-logo" src="{logo_uri}" alt="Logo">'
+            'Gordon Wang 的股票预测系统'
+            '</h1>'
+            '<p class="main-subtitle">基于RTX 5090 GPU加速的智能股票预测平台</p>'
+            '</div>'
+        )
+    else:
+        title_html = (
+            '<div class="title-banner">'
+            '<h1 class="main-header gradient-title glow">Gordon Wang 的股票预测系统</h1>'
+            '<p class="main-subtitle">基于RTX 5090 GPU加速的智能股票预测平台</p>'
+            '</div>'
+        )
+    st.markdown(title_html, unsafe_allow_html=True)
+
     # 检查API状态
     if not check_api_health():
         st.error("⚠️ API服务不可用，请检查后端服务是否启动")
         st.info("请确保运行: `python app/api.py` 或 `uvicorn app.api:app --host 0.0.0.0 --port 8000`")
         return
-    
+
     # 侧边栏配置
     st.sidebar.header("📊 预测配置")
-    
+
     # 股票代码输入
     stock_code = st.sidebar.text_input(
         "股票代码",
         value="000001",
         help="输入6位股票代码，如：000001、600000"
     ).strip()
-    
+
     # 预测参数
     pred_len = st.sidebar.slider("预测天数", 1, 60, 30)
     # 历史数据周期选项（中文显示，英文值）
@@ -486,7 +472,7 @@ def render_stock_prediction_content():
     }
     period_display = st.sidebar.selectbox("历史数据周期", list(period_options.keys()), index=1)
     period = period_options[period_display]
-    
+
     # 高级参数
     with st.sidebar.expander("🔧 高级参数"):
         # 性能模式选择
@@ -511,25 +497,25 @@ def render_stock_prediction_content():
         temperature = st.slider("采样温度", 0.1, 2.0, 1.0, 0.1)
         top_p = st.slider("核采样概率", 0.1, 1.0, 0.9, 0.05)
         sample_count = st.slider("采样次数", 1, 3, 1)
-    
+
     # 预测按钮
     if st.sidebar.button("🚀 开始预测", type="primary"):
         if not stock_code:
             st.error("请输入股票代码")
             return
-        
+
         # 显示加载状态
         with st.spinner(f"正在预测 {stock_code}..."):
             # 获取股票信息
             stock_info_response = get_stock_info(stock_code)
-            
+
             if stock_info_response and stock_info_response.get('success'):
                 stock_info = stock_info_response['data']
                 st.success(f"✅ 找到股票: {stock_info['name']} ({stock_info['code']})")
             else:
                 st.warning("⚠️ 无法获取股票信息，继续预测...")
                 stock_info = {'name': 'Unknown', 'code': stock_code}
-            
+
             # 执行预测
             result = get_stock_prediction(
                 stock_code=stock_code,
@@ -540,16 +526,16 @@ def render_stock_prediction_content():
                 top_p=top_p,
                 sample_count=sample_count
             )
-        
+
         # 显示结果
         if result['success']:
             data = result['data']
             summary = data['summary']
-            
+
             # 显示指标
             st.subheader("📊 预测摘要")
             create_metrics_display(summary)
-            
+
             # 显示图表
             st.subheader("📈 价格走势图")
             try:
@@ -858,22 +844,22 @@ def render_stock_prediction_content():
                 st.error(f"图表生成失败: {str(e)}")
                 import traceback
                 st.code(traceback.format_exc())
-            
+
             # 详细信息
             col1, col2 = st.columns(2)
-            
+
             with col1:
                 st.subheader("📋 预测详情")
                 st.write(f"**波动率**: {summary['volatility']:.2f}%")
                 st.write(f"**置信度**: {summary['confidence']}")
                 st.write(f"**预测天数**: {summary['prediction_days']} 天")
-                
+
                 # 风险提示
                 if abs(summary['change_percent']) > 10:
                     st.warning("⚠️ 预测变化幅度较大，请注意风险")
                 elif summary['volatility'] > 30:
                     st.warning("⚠️ 股票波动率较高，请谨慎投资")
-            
+
             with col2:
                 st.subheader("ℹ️ 模型信息")
                 metadata = data['metadata']
@@ -881,7 +867,7 @@ def render_stock_prediction_content():
                 st.write(f"**数据源**: {metadata['data_source']}")
                 st.write(f"**预测时间**: {metadata['prediction_time'][:19]}")
                 st.write(f"**模拟模式**: {'是' if metadata['use_mock'] else '否'}")
-            
+
             # 数据表格
             with st.expander("📊 查看预测数据"):
                 pred_df = pd.DataFrame(data['predictions'])
@@ -909,29 +895,29 @@ def render_stock_prediction_content():
                     pred_df['成交额 (万元)'] = (pred_df['成交额 (万元)'] / 10000).round(2)
 
                 st.dataframe(pred_df, use_container_width=True)
-            
+
             # 免责声明
             st.markdown("---")
             st.markdown("""
             **⚠️ 免责声明**
-            
+
             本预测结果仅供参考，不构成投资建议。股票投资存在风险，请根据自身情况谨慎决策。
             预测模型基于历史数据，无法保证未来表现。
             """)
-            
+
         else:
             st.error(f"❌ 预测失败: {result['error']}")
-    
+
     # 示例股票
     st.sidebar.markdown("---")
     st.sidebar.subheader("💡 示例股票")
     example_stocks = {
         "平安银行": "000001",
-        "浦发银行": "600000", 
+        "浦发银行": "600000",
         "万科A": "000002",
         "招商银行": "600036"
     }
-    
+
     for name, code in example_stocks.items():
         if st.sidebar.button(f"{name} ({code})", key=f"example_{code}"):
             st.experimental_set_query_params(stock_code=code)
@@ -945,7 +931,7 @@ def render_stock_prediction_content():
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
     **🤖 Powered by Gordon**
-    
+
     基于深度学习的金融时序预测模型
     """)
 

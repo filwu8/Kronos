@@ -28,7 +28,7 @@ const chineseTranslations = {
     'Community': '社区',
     'GitHub': 'GitHub',
     'Twitter': 'Twitter',
-    
+
     // 工具栏文本
     'Pan': '平移',
     'Box Zoom': '框选缩放',
@@ -37,7 +37,7 @@ const chineseTranslations = {
     'Autoscale': '自适应',
     'Reset axes': '重置',
     'Download plot as a png': '保存图片',
-    
+
     // 常用界面文本
     'Loading...': '加载中...',
     'Error': '错误',
@@ -48,7 +48,7 @@ const chineseTranslations = {
     'Processing': '处理中',
     'Complete': '完成',
     'Failed': '失败',
-    
+
     // 表单文本
     'Submit': '提交',
     'Reset': '重置',
@@ -61,14 +61,14 @@ const chineseTranslations = {
     'Search': '搜索',
     'Filter': '筛选',
     'Sort': '排序',
-    
+
     // 数据相关
     'No data available': '暂无数据',
     'Data loaded successfully': '数据加载成功',
     'Data loading failed': '数据加载失败',
     'Invalid input': '输入无效',
     'Required field': '必填字段',
-    
+
     // 时间相关
     'Today': '今天',
     'Yesterday': '昨天',
@@ -89,18 +89,21 @@ function translateToolbar() {
         'Reset axes': '重置 - 回到原始视图',
         'Download plot as a png': '保存 - 下载高清图片'
     };
-    
+
     let translated = 0;
-    
-    // 翻译工具栏按钮
+
+    // 翻译工具栏按钮（同时处理 data-title / title / aria-label）
     document.querySelectorAll('.modebar-btn').forEach(btn => {
-        const title = btn.getAttribute('title');
-        if (title && tooltipMap[title]) {
-            btn.setAttribute('title', tooltipMap[title]);
+        const key = btn.getAttribute('data-title') || btn.getAttribute('title') || btn.getAttribute('aria-label');
+        if (key && tooltipMap[key]) {
+            const zh = tooltipMap[key];
+            btn.setAttribute('data-title', zh);
+            btn.setAttribute('title', zh);
+            btn.setAttribute('aria-label', zh);
             translated++;
         }
     });
-    
+
     console.log(`🔧 工具栏中文化: 翻译了 ${translated} 个按钮`);
     return translated;
 }
@@ -108,7 +111,7 @@ function translateToolbar() {
 // 通用文本翻译函数
 function translateText(element) {
     if (!element) return;
-    
+
     const text = element.textContent.trim();
     if (chineseTranslations[text]) {
         element.textContent = chineseTranslations[text];
@@ -120,22 +123,22 @@ function translateText(element) {
 // 翻译页面中的所有文本
 function translatePage() {
     let translated = 0;
-    
+
     // 翻译按钮文本
     document.querySelectorAll('button').forEach(btn => {
         if (translateText(btn)) translated++;
     });
-    
+
     // 翻译链接文本
     document.querySelectorAll('a').forEach(link => {
         if (translateText(link)) translated++;
     });
-    
+
     // 翻译标签文本
     document.querySelectorAll('label').forEach(label => {
         if (translateText(label)) translated++;
     });
-    
+
     // 翻译菜单项
     document.querySelectorAll('[role="menuitem"]').forEach(item => {
         if (translateText(item)) translated++;
@@ -155,7 +158,7 @@ function translatePage() {
     document.querySelectorAll('[role="menu"] [role="menuitem"]').forEach(item => {
         if (translateText(item)) translated++;
     });
-    
+
     // 翻译工具提示
     document.querySelectorAll('[title]').forEach(element => {
         const title = element.getAttribute('title');
@@ -164,7 +167,7 @@ function translatePage() {
             translated++;
         }
     });
-    
+
     console.log(`🌐 页面中文化: 翻译了 ${translated} 个文本元素`);
     return translated;
 }
@@ -212,6 +215,17 @@ function hideStreamlitElements() {
         toolbar.style.display = 'none';
     });
 
+    // 强制隐藏系统 Header 占位
+    const headerEl = document.querySelector('[data-testid="stHeader"]');
+    if (headerEl) {
+        headerEl.style.setProperty('display', 'none', 'important');
+        headerEl.style.minHeight = '0px';
+        headerEl.style.height = '0px';
+        headerEl.style.padding = '0px';
+        headerEl.style.margin = '0px';
+        headerEl.style.overflow = 'hidden';
+    }
+
     // 移除所有Streamlit品牌元素
     const brandElements = document.querySelectorAll('.css-1dp5vir, .css-hi6a2p');
     brandElements.forEach(element => {
@@ -219,12 +233,14 @@ function hideStreamlitElements() {
         element.remove();
     });
 
-    console.log('🚫 已移除Streamlit广告元素');
+    // console.log('🚫 已移除Streamlit广告元素');
 }
 
 // 添加自定义导航栏
 function addCustomNavbar() {
+    if (document.getElementById('custom-navbar')) return; // 防重复插入
     const navbar = document.createElement('div');
+    navbar.id = 'custom-navbar';
     navbar.className = 'custom-navbar';
     navbar.innerHTML = `
         <h1>🚀 Gordon Wang 的股票预测系统</h1>
@@ -232,7 +248,7 @@ function addCustomNavbar() {
             基于RTX 5090 GPU加速的智能股票预测平台
         </p>
     `;
-    
+
     // 插入到页面顶部
     const mainContainer = document.querySelector('.main');
     if (mainContainer) {
@@ -270,9 +286,9 @@ function showMessage(message, type = 'info') {
     messageDiv.style.right = '20px';
     messageDiv.style.zIndex = '9999';
     messageDiv.style.minWidth = '300px';
-    
+
     document.body.appendChild(messageDiv);
-    
+
     // 3秒后自动消失
     setTimeout(() => {
         messageDiv.remove();
@@ -293,6 +309,62 @@ function tightenTopWhitespace() {
         if (ec.querySelector('.main-header')) return true;
         const t = (ec.innerText || '').trim();
         return /🚀\s*Gordon\s+Wang|股票预测系统|RTX\s*5090/.test(t);
+
+// 将标题横幅固定在顶部，并为主容器添加等高占位，防止内容被遮挡
+function pinTitleBanner() {
+    let banner = document.querySelector('.title-banner');
+    if (!banner) return;
+
+    const header = document.querySelector('[data-testid="stHeader"]');
+
+    function ensurePortal() {
+        let portal = document.getElementById('title-banner-portal');
+        if (!portal) {
+            portal = document.createElement('div');
+            portal.id = 'title-banner-portal';
+            Object.assign(portal.style, {
+                position: 'fixed', top: '0px', left: '0', right: '0', zIndex: '1100'
+            });
+            document.body.appendChild(portal);
+        }
+        if (banner.parentNode !== portal) {
+            portal.appendChild(banner); // 移动节点到 body 顶层，避开上层 transform 影响
+            // 重置横幅在门户内的定位与边距
+            banner.style.position = 'relative';
+            banner.style.top = '0px';
+            banner.style.left = '0';
+            banner.style.right = '0';
+            banner.style.margin = '0';
+        }
+        return portal;
+    }
+
+    function apply() {
+        // 彻底移除系统Header占位
+        if (header) header.style.setProperty('display', 'none', 'important');
+
+        // 确保门户存在并将横幅挂到 body 顶层
+        const portal = ensurePortal();
+
+        // 记录横幅高度，供主容器预留占位
+        const h = Math.ceil(banner.getBoundingClientRect().height);
+        document.documentElement.style.setProperty('--title-banner-offset', '0px');
+        document.documentElement.style.setProperty('--title-banner-h', h + 'px');
+
+        // 将根滚动容器的 padding-top 设为横幅高度，避免横幅覆盖内容
+        const mainContainer = document.querySelector('.main .block-container');
+        if (mainContainer) {
+            mainContainer.style.paddingTop = `calc(var(--title-banner-h, ${h}px) + 0.1rem)`;
+        }
+    }
+
+    // 初次与后续响应
+    apply();
+    window.addEventListener('resize', () => requestAnimationFrame(apply));
+    const obs = new MutationObserver(() => requestAnimationFrame(apply));
+    obs.observe(document.body, { childList: true, subtree: true, attributes: true });
+}
+
     };
 
     const titleIdx = containers.findIndex(isTitleContainer);
@@ -314,8 +386,11 @@ function initializeChineseUI() {
     // 压缩顶部多余空白
     tightenTopWhitespace();
 
-    // 添加自定义导航栏
+    // 保留/恢复自定义导航栏（如有）
     addCustomNavbar();
+
+    // 固定标题横幅
+    pinTitleBanner();
 
     // 翻译页面文本
     translatePage();
@@ -342,7 +417,7 @@ setInterval(() => {
 // 监听DOM变化，自动翻译新元素
 const observer = new MutationObserver(function(mutations) {
     let shouldTranslate = false;
-    
+
     mutations.forEach(function(mutation) {
         if (mutation.addedNodes.length > 0) {
             mutation.addedNodes.forEach(function(node) {
@@ -352,7 +427,7 @@ const observer = new MutationObserver(function(mutations) {
             });
         }
     });
-    
+
     if (shouldTranslate) {
         setTimeout(() => {
             translatePage();

@@ -1,23 +1,39 @@
 
+/* 固定标题横幅（锁定首行效果） */
+.title-banner {
+    position: sticky;
+    top: 0; /* 贴合容器顶部 */
+    z-index: 1000;
+    backdrop-filter: blur(6px);
+    background: linear-gradient(180deg, rgba(14,17,23,0.85), rgba(14,17,23,0.65) 60%, rgba(14,17,23,0));
+    padding: 0.5rem 0.5rem 0.25rem 0.5rem;
+    margin: 0 -0.5rem 0.25rem -0.5rem; /* 略微扩展横向，覆盖容器边距 */
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+}
+
+@supports not ((-webkit-backdrop-filter: none) or (backdrop-filter: none)) {
+    .title-banner { background: rgba(14,17,23,0.9); }
+}
+
         /* Gordon Wang 股票预测系统 - 本地化CSS */
-        
+
         /* 中文字体优化 */
         @font-face {
             font-family: 'Chinese Font';
             src: local('Microsoft YaHei'), local('SimHei'), local('SimSun');
             font-display: swap;
         }
-        
+
         body {
             font-family: 'Chinese Font', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
         }
-        
+
         /* 确保中文字符正确显示 */
         .chinese-text {
             font-family: 'Chinese Font', sans-serif;
             font-weight: 400;
         }
-        
+
         /* 本地化图标 */
         .icon-local {
             display: inline-block;
@@ -27,16 +43,112 @@
             background-repeat: no-repeat;
             background-position: center;
         }
-        
+
         .icon-chart {
             background-image: url('/static/icons/chart.svg');
         }
-        
+
         .icon-settings {
             background-image: url('/static/icons/settings.svg');
         }
-        
+
         .icon-download {
             background-image: url('/static/icons/download.svg');
         }
-        
+
+
+/* 标题与副标题样式（暗色适配与居中） */
+.main-header {
+    text-align: center !important;
+    color: #e5e7eb !important; /* Tailwind slate-200 */
+    margin: 0 0 0.5rem 0 !important;
+    position: relative; /* 为光带效果提供定位上下文 */
+    display: flex;
+    align-items: center; /* 垂直居中图标与文字 */
+    justify-content: center; /* 整体水平居中 */
+    gap: 0.35em; /* 图标与文字间距 */
+    line-height: 1.1;
+}
+
+.main-header .title-logo {
+    height: 1.6em; /* 跟随标题字号缩放 */
+    width: auto;
+    display: block; /* 去掉内联元素基线影响 */
+    flex: 0 0 auto;
+}
+
+.main-subtitle {
+    text-align: center !important;
+    color: #9ca3af !important; /* Tailwind gray-400 */
+    margin: -0.25rem 0 0 0 !important;
+    font-size: 0.95rem !important;
+}
+
+
+/* 酷炫彩色渐变标题（可复用） */
+.gradient-title {
+    background: linear-gradient(90deg, #ff6b6b, #f8e71c, #7ed321, #50e3c2, #4a90e2, #bd10e0);
+    background-size: 300% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: gradientShift 8s ease infinite;
+    letter-spacing: 0.5px;
+}
+
+/* 发光效果（可选） */
+.gradient-title.glow {
+    text-shadow: 0 2px 10px rgba(255, 255, 255, 0.12), 0 0 20px rgba(99, 102, 241, 0.25);
+}
+
+@keyframes gradientShift {
+    0% { background-position: 0% 50%; }
+    50% { background-position: 100% 50%; }
+    100% { background-position: 0% 50%; }
+}
+
+/* 尊重“降低动态效果”用户偏好 */
+@media (prefers-reduced-motion: reduce) {
+    .gradient-title { animation: none; }
+}
+
+/* 标题光带扫过（可选特效） */
+.gradient-title.glow::after {
+    content: "";
+    position: absolute;
+    left: -10%;
+    top: 10%;
+    width: 20%;
+    height: 80%;
+    background: linear-gradient(90deg,
+        rgba(255,107,107,0.00) 0%,
+        rgba(255,107,107,0.25) 12%,
+        rgba(248,231,28,0.25) 28%,
+        rgba(126,211,33,0.25) 44%,
+        rgba(80,227,194,0.25) 60%,
+        rgba(74,144,226,0.25) 76%,
+        rgba(189,16,224,0.25) 88%,
+        rgba(189,16,224,0.00) 100%);
+    transform: skewX(-20deg);
+    filter: blur(10px);
+
+/* 横幅固定后为主内容预留等高占位，避免遮挡 */
+.main .block-container {
+    padding-top: calc(var(--title-banner-h, 0px) + 0.25rem) !important;
+}
+
+    pointer-events: none;
+    animation: sweep 3.6s ease-in-out infinite;
+}
+
+@keyframes sweep {
+    0%   { left: -15%; opacity: 0; }
+    10%  { opacity: 1; }
+    50%  { left: 110%; opacity: 1; }
+    100% { left: 110%; opacity: 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .gradient-title.glow::after { animation: none; }
+}
+
