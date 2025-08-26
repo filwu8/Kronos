@@ -1,0 +1,107 @@
+version: '3.8'
+
+services:
+  # RTX 5090 GPU加速股票预测系统
+  kronos-gpu:
+    build:
+      context: ../../
+      dockerfile: scripts/docker/Dockerfile
+    container_name: kronos-rtx5090
+    restart: unless-stopped
+    
+    # GPU配置
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    # 环境变量
+    environment:
+      - DOCKER_ENV=1
+      - CUDA_VISIBLE_DEVICES=0
+      - DEVICE=cuda
+      - USE_MOCK=false
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - STREAMLIT_HOST=0.0.0.0
+      - STREAMLIT_PORT=8501
+      - LOG_LEVEL=INFO
+      - AUTO_DOWNLOAD_DATA=true
+    
+    # 端口映射
+    ports:
+      - "8000:8000"  # API服务
+      - "8501:8501"  # Streamlit前端
+    
+    # 数据卷挂载
+    volumes:
+      - ../../volumes:/volumes
+      - gpu_cache:/root/.cache
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    
+    # 网络配置
+    networks:
+      - kronos-network
+
+  # Streamlit前端服务 (独立容器)
+  kronos-frontend:
+    build:
+      context: ../../
+      dockerfile: scripts/docker/Dockerfile.frontend
+    container_name: kronos-frontend
+    restart: unless-stopped
+    
+    environment:
+      - API_BASE_URL=http://kronos-gpu:8000
+      - STREAMLIT_HOST=0.0.0.0
+      - STREAMLIT_PORT=8501
+    
+    ports:
+      - "8502:8501"  # 备用前端端口
+    
+    depends_on:
+      - kronos-gpu
+    
+    networks:
+      - kronos-network
+
+  # Nginx反向代理 (可选)
+  nginx:
+    image: nginx:alpine
+    container_name: kronos-nginx
+    restart: unless-stopped
+    
+    ports:
+      - "80:80"
+      - "443:443"
+    
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl:/etc/nginx/ssl:ro
+    
+    depends_on:
+      - kronos-gpu
+      - kronos-frontend
+    
+    networks:
+      - kronos-network
+
+# 网络配置
+networks:
+  kronos-network:
+    driver: bridge
+
+# 数据卷配置
+volumes:
+  gpu_cache:
+    driver: local

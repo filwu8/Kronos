@@ -1,0 +1,362 @@
+"""
+股票预测服务
+集成Kronos模型进行股票价格预测
+"""
+
+import sys
+import os
+import numpy as np
+import pandas as pd
+import torch
+from datetime import datetime, timedelta
+import logging
+from typing import Dict, List, Optional, Tuple
+import warnings
+
+# 添加项目根目录到路径
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    from model import Kronos, KronosTokenizer, KronosPredictor
+except ImportError:
+    # 如果无法导入，创建模拟类
+    logging.warning("无法导入Kronos模型，使用模拟预测")
+    
+    class MockKronosPredictor:
+        def __init__(self, *args, **kwargs):
+            self.device = kwargs.get('device', 'cpu')
+            
+        def predict(self, df, x_timestamp, y_timestamp, pred_len, **kwargs):
+            # 生成模拟预测数据
+            last_close = df['close'].iloc[-1]
+            dates = y_timestamp
+            
+            # 生成随机波动的价格预测
+            np.random.seed(42)
+            returns = np.random.normal(0, 0.02, pred_len)  # 2%的日波动率
+            
+            pred_data = []
+            current_price = last_close
+            
+            for i, ret in enumerate(returns):
+                current_price *= (1 + ret)
+                # 生成OHLC数据
+                high = current_price * (1 + abs(np.random.normal(0, 0.01)))
+                low = current_price * (1 - abs(np.random.normal(0, 0.01)))
+                open_price = current_price * (1 + np.random.normal(0, 0.005))
+                volume = df['volume'].mean() * (1 + np.random.normal(0, 0.3))
+                amount = volume * current_price
+                
+                pred_data.append({
+                    'open': open_price,
+                    'high': max(high, open_price, current_price),
+                    'low': min(low, open_price, current_price),
+                    'close': current_price,
+                    'volume': max(volume, 0),
+                    'amount': max(amount, 0)
+                })
+            
+            return pd.DataFrame(pred_data, index=dates)
+    
+    KronosPredictor = MockKronosPredictor
+
+from .data_fetcher import AStockDataFetcher
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 忽略警告
+warnings.filterwarnings('ignore')
+
+
+class StockPredictionService:
+    """股票预测服务"""
+    
+    def __init__(self, device: str = "cpu", use_mock: bool = False):
+        """
+        初始化预测服务
+        Args:
+            device: 计算设备 ('cpu' 或 'cuda')
+            use_mock: 是否使用模拟模型
+        """
+        self.device = device
+        self.use_mock = use_mock
+        self.data_fetcher = AStockDataFetcher()
+        self.predictor = None
+        self.model_loaded = False
+        
+        # 预测参数
+        self.default_params = {
+            'lookback': 400,  # 历史数据长度
+            'pred_len': 30,   # 预测天数
+            'max_context': 512,
+            'T': 1.0,         # 温度参数
+            'top_p': 0.9,     # 核采样
+            'top_k': 0,       # top-k采样
+            'sample_count': 1, # 采样次数
+            'clip': 5.0       # 数据裁剪
+        }
+        
+        self._load_model()
+    
+    def _load_model(self):
+        """加载Kronos模型"""
+        try:
+            if self.use_mock:
+                logger.info("使用模拟预测模型")
+                self.predictor = KronosPredictor(device=self.device)
+                self.model_loaded = True
+                return
+            
+            logger.info("开始加载Kronos模型...")
+            
+            # 检查设备可用性
+            if self.device == "cuda" and not torch.cuda.is_available():
+                logger.warning("CUDA不可用，切换到CPU")
+                self.device = "cpu"
+            
+            # 加载tokenizer和model
+            try:
+                tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+                model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+                
+                # 创建预测器
+                self.predictor = KronosPredictor(
+                    model=model, 
+                    tokenizer=tokenizer, 
+                    device=self.device,
+                    max_context=self.default_params['max_context'],
+                    clip=self.default_params['clip']
+                )
+                
+                self.model_loaded = True
+                logger.info(f"Kronos模型加载成功，设备: {self.device}")
+                
+            except Exception as e:
+                logger.error(f"加载预训练模型失败: {str(e)}")
+                logger.info("切换到模拟模式")
+                self.predictor = KronosPredictor(device=self.device)
+                self.model_loaded = True
+                self.use_mock = True
+                
+        except Exception as e:
+            logger.error(f"模型加载失败: {str(e)}")
+            self.model_loaded = False
+    
+    def prepare_data(self, df: pd.DataFrame, lookback: int, pred_len: int) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
+        """
+        准备预测数据
+        Args:
+            df: 股票历史数据
+            lookback: 历史数据长度
+            pred_len: 预测长度
+        Returns:
+            (x_df, x_timestamp, y_timestamp): 输入数据和时间戳
+        """
+        # 确保数据足够
+        if len(df) < lookback:
+            lookback = len(df)
+            logger.warning(f"数据不足，调整lookback为: {lookback}")
+
+        # 准备输入数据
+        x_df = df.iloc[-lookback:][['open', 'high', 'low', 'close', 'volume', 'amount']].copy()
+        x_timestamp = df.index[-lookback:]
+
+        # 生成预测时间戳
+        last_date = df.index[-1]
+        pred_dates = pd.date_range(
+            start=last_date + timedelta(days=1),
+            periods=pred_len,
+            freq='D'
+        )
+
+        return x_df, x_timestamp, pred_dates
+    
+    def predict_stock(self, stock_code: str, **kwargs) -> Dict:
+        """
+        预测股票价格
+        Args:
+            stock_code: 股票代码
+            **kwargs: 预测参数
+        Returns:
+            Dict: 预测结果
+        """
+        try:
+            if not self.model_loaded:
+                return {
+                    'success': False,
+                    'error': '模型未加载',
+                    'data': None
+                }
+            
+            logger.info(f"开始预测股票: {stock_code}")
+            
+            # 获取股票信息
+            stock_info = self.data_fetcher.get_stock_info(stock_code)
+            
+            # 获取历史数据
+            period = kwargs.get('period', '1y')
+            df = self.data_fetcher.fetch_stock_data(stock_code, period=period)
+            
+            if df is None or df.empty:
+                return {
+                    'success': False,
+                    'error': f'无法获取股票数据: {stock_code}',
+                    'data': None
+                }
+            
+            # 验证数据质量
+            if not self.data_fetcher.validate_data(df, min_days=50):
+                return {
+                    'success': False,
+                    'error': '数据质量不符合要求',
+                    'data': None
+                }
+            
+            # 更新预测参数
+            params = self.default_params.copy()
+            params.update(kwargs)
+            
+            # 准备数据
+            x_df, x_timestamp, y_timestamp = self.prepare_data(df, params['lookback'], params['pred_len'])
+            
+            # 执行预测
+            logger.info("开始执行预测...")
+            pred_df = self.predictor.predict(
+                df=x_df,
+                x_timestamp=x_timestamp,
+                y_timestamp=y_timestamp,
+                pred_len=params['pred_len'],
+                T=params['T'],
+                top_p=params['top_p'],
+                top_k=params['top_k'],
+                sample_count=params['sample_count'],
+                verbose=False
+            )
+            
+            # 计算预测统计
+            last_close = df['close'].iloc[-1]
+            pred_close = pred_df['close'].iloc[-1]
+            change_pct = (pred_close - last_close) / last_close * 100
+            
+            # 计算趋势
+            trend = "上涨" if change_pct > 1 else "下跌" if change_pct < -1 else "震荡"
+            
+            # 计算波动率
+            returns = df['close'].pct_change().dropna()
+            volatility = returns.std() * np.sqrt(252) * 100  # 年化波动率
+            
+            result = {
+                'success': True,
+                'error': None,
+                'data': {
+                    'stock_info': stock_info,
+                    'historical_data': df.tail(min(100, len(df))).to_dict('records'),  # 最近100天历史数据
+                    'predictions': pred_df.to_dict('records'),
+                    'summary': {
+                        'current_price': float(last_close),
+                        'predicted_price': float(pred_close),
+                        'change_amount': float(pred_close - last_close),
+                        'change_percent': float(change_pct),
+                        'trend': trend,
+                        'volatility': float(volatility),
+                        'prediction_days': params['pred_len'],
+                        'confidence': 'Medium'  # 简化的置信度
+                    },
+                    'metadata': {
+                        'prediction_time': datetime.now().isoformat(),
+                        'data_source': 'akshare/yfinance',
+                        'model_version': 'Kronos-small',
+                        'use_mock': self.use_mock
+                    }
+                }
+            }
+            
+            logger.info(f"预测完成: {stock_code}, 预期变化: {change_pct:.2f}%")
+            return result
+            
+        except Exception as e:
+            logger.error(f"预测失败 {stock_code}: {str(e)}")
+            return {
+                'success': False,
+                'error': f'预测过程中发生错误: {str(e)}',
+                'data': None
+            }
+    
+    def get_model_status(self) -> Dict:
+        """获取模型状态"""
+        return {
+            'model_loaded': self.model_loaded,
+            'device': self.device,
+            'use_mock': self.use_mock,
+            'cuda_available': torch.cuda.is_available(),
+            'default_params': self.default_params
+        }
+    
+    def batch_predict(self, stock_codes: List[str], **kwargs) -> Dict[str, Dict]:
+        """
+        批量预测多只股票
+        Args:
+            stock_codes: 股票代码列表
+            **kwargs: 预测参数
+        Returns:
+            Dict: 批量预测结果
+        """
+        results = {}
+        
+        for code in stock_codes:
+            try:
+                result = self.predict_stock(code, **kwargs)
+                results[code] = result
+            except Exception as e:
+                results[code] = {
+                    'success': False,
+                    'error': str(e),
+                    'data': None
+                }
+        
+        return results
+
+
+# 全局预测服务实例
+_prediction_service = None
+
+def get_prediction_service(device: str = "cpu", use_mock: bool = False) -> StockPredictionService:
+    """获取预测服务实例（单例模式）"""
+    global _prediction_service
+    
+    if _prediction_service is None:
+        _prediction_service = StockPredictionService(device=device, use_mock=use_mock)
+    
+    return _prediction_service
+
+
+# 测试函数
+def test_prediction_service():
+    """测试预测服务"""
+    service = get_prediction_service(use_mock=True)
+    
+    # 测试模型状态
+    status = service.get_model_status()
+    print(f"模型状态: {status}")
+    
+    # 测试预测
+    test_codes = ['000001', '600000']
+    
+    for code in test_codes:
+        print(f"\n测试预测: {code}")
+        result = service.predict_stock(code, pred_len=30)
+        
+        if result['success']:
+            summary = result['data']['summary']
+            print(f"当前价格: {summary['current_price']:.2f}")
+            print(f"预测价格: {summary['predicted_price']:.2f}")
+            print(f"预期变化: {summary['change_percent']:.2f}%")
+            print(f"趋势: {summary['trend']}")
+        else:
+            print(f"预测失败: {result['error']}")
+
+
+if __name__ == "__main__":
+    test_prediction_service()

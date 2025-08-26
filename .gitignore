@@ -1,0 +1,89 @@
+# Volumes目录 - 包含运行时数据
+volumes/
+
+# 日志文件
+*.log
+logs/
+
+# Python缓存
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# 虚拟环境
+venv/
+env/
+ENV/
+
+# IDE文件
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# 操作系统文件
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# 环境变量文件（保留示例文件）
+.env
+!.env.example
+
+# 备份文件
+backups/
+*.backup.*
+
+# 临时文件
+tmp/
+temp/
+*.tmp
+
+# Docker相关
+.dockerignore
+
+# 模型文件（如果很大）
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+
+# 数据文件
+*.csv
+*.json
+*.pkl
+*.pickle
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pytest
+.pytest_cache/
+.coverage
+
+# mypy
+.mypy_cache/
+.dmypy.json
+dmypy.json

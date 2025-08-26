@@ -1,0 +1,47 @@
+[global]
+# 开发模式设置
+developmentMode = false
+showWarningOnDirectExecution = false
+
+[server]
+# 服务器设置
+headless = true
+runOnSave = false
+port = 8501
+enableCORS = false
+enableXsrfProtection = false
+
+[browser]
+# 浏览器设置
+gatherUsageStats = false
+serverAddress = "localhost"
+serverPort = 8501
+
+[theme]
+# 主题设置（切换为暗色主题）
+base = "dark"
+primaryColor = "#1f77b4"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#262730"
+textColor = "#FAFAFA"
+font = "sans serif"
+
+[ui]
+# 界面设置 - 隐藏Streamlit广告元素
+hideTopBar = true
+hideSidebarNav = false
+
+[runner]
+# 运行设置
+fastReruns = true
+enforceSerializableSessionState = false
+
+[logger]
+# 日志设置
+level = "error"
+messageFormat = "%(asctime)s %(message)s"
+
+[client]
+# 客户端设置
+showErrorDetails = true
+toolbarMode = "minimal"

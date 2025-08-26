@@ -1,0 +1,123 @@
+version: '3.8'
+
+services:
+  # API后端服务
+  api:
+    build: .
+    container_name: kronos-api
+    # 不暴露端口到宿主机，仅在内部网络通信
+    expose:
+      - "8000"
+    environment:
+      - USE_MOCK_MODEL=${USE_MOCK_MODEL:-true}
+      - DEVICE=${DEVICE:-cpu}
+      - PYTHONPATH=/app
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - DEFAULT_PERIOD=${DEFAULT_PERIOD:-1y}
+      - DEFAULT_PRED_LEN=${DEFAULT_PRED_LEN:-30}
+      - SERVICE_TYPE=api
+    env_file:
+      - .env
+    volumes:
+      # 使用绑定挂载到 volumes 文件夹
+      - ./volumes/app:/app/app
+      - ./volumes/model:/app/model
+      - ./volumes/examples:/app/examples
+      - ./volumes/finetune:/app/finetune
+      - ./volumes/logs:/app/logs
+      # 数据存储卷
+      - ./volumes/qlib_data:/root/.qlib/qlib_data
+      - ./volumes/data:/app/data
+      - ./volumes/models:/app/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+    networks:
+      - kronos-internal
+
+  # Streamlit前端服务
+  frontend:
+    build: .
+    container_name: kronos-frontend
+    # 不暴露端口到宿主机，仅在内部网络通信
+    expose:
+      - "8501"
+    environment:
+      - PYTHONPATH=/app
+      - API_BASE_URL=http://api:8000
+      - SERVICE_TYPE=frontend
+    env_file:
+      - .env
+    volumes:
+      # 使用绑定挂载到 volumes 文件夹
+      - ./volumes/app:/app/app
+      - ./volumes/logs:/app/logs
+      # 数据存储卷
+      - ./volumes/qlib_data:/root/.qlib/qlib_data
+      - ./volumes/data:/app/data
+      - ./volumes/models:/app/models
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - kronos-internal
+
+  # 数据下载服务 - 一次性运行
+  data-downloader:
+    build: .
+    container_name: kronos-data-downloader
+    environment:
+      - PYTHONPATH=/app
+      - SERVICE_TYPE=data_downloader
+    env_file:
+      - .env
+    volumes:
+      - ./volumes/app:/app/app
+      - ./volumes/qlib_data:/root/.qlib/qlib_data
+      - ./volumes/data:/app/data
+      - ./volumes/models:/app/models
+      - ./volumes/logs:/app/logs
+    command: python download_5year_data.py
+    restart: "no"  # 只运行一次
+    networks:
+      - kronos-internal
+    profiles:
+      - data-download  # 使用profile控制，默认不启动
+
+  # Nginx反向代理 - 唯一暴露到宿主机的服务
+  nginx:
+    image: nginx:alpine
+    container_name: kronos-nginx
+    ports:
+      # 只暴露一个端口到宿主机
+      - "${NGINX_PORT:-80}:80"
+    volumes:
+      # 直接挂载配置文件（只读）
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./volumes/nginx_logs:/var/log/nginx
+    depends_on:
+      - api
+      - frontend
+    restart: unless-stopped
+    networks:
+      - kronos-internal
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+networks:
+  # 内部网络，容器间通信
+  kronos-internal:
+    driver: bridge
+    internal: false  # 允许访问外网（用于数据获取）
+
+# 注意：使用绑定挂载到 ./volumes/ 目录
+# 启动前会自动创建必要的目录结构

@@ -1,0 +1,42 @@
+
+        /* Gordon Wang 股票预测系统 - 本地化CSS */
+        
+        /* 中文字体优化 */
+        @font-face {
+            font-family: 'Chinese Font';
+            src: local('Microsoft YaHei'), local('SimHei'), local('SimSun');
+            font-display: swap;
+        }
+        
+        body {
+            font-family: 'Chinese Font', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        /* 确保中文字符正确显示 */
+        .chinese-text {
+            font-family: 'Chinese Font', sans-serif;
+            font-weight: 400;
+        }
+        
+        /* 本地化图标 */
+        .icon-local {
+            display: inline-block;
+            width: 1em;
+            height: 1em;
+            background-size: contain;
+            background-repeat: no-repeat;
+            background-position: center;
+        }
+        
+        .icon-chart {
+            background-image: url('/static/icons/chart.svg');
+        }
+        
+        .icon-settings {
+            background-image: url('/static/icons/settings.svg');
+        }
+        
+        .icon-download {
+            background-image: url('/static/icons/download.svg');
+        }
+        
