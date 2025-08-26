@@ -498,8 +498,8 @@ def render_stock_prediction_content():
         top_p = st.slider("核采样概率", 0.1, 1.0, 0.9, 0.05)
         sample_count = st.slider("采样次数", 1, 3, 1)
 
-    # 预测按钮
-    if st.sidebar.button("🚀 开始预测", type="primary"):
+    # 预测按钮（统一侧边栏按钮宽度）
+    if st.sidebar.button("🚀 开始预测", type="primary", use_container_width=True):
         if not stock_code:
             st.error("请输入股票代码")
             return
@@ -919,7 +919,7 @@ def render_stock_prediction_content():
     }
 
     for name, code in example_stocks.items():
-        if st.sidebar.button(f"{name} ({code})", key=f"example_{code}"):
+        if st.sidebar.button(f"{name} ({code})", key=f"example_{code}", use_container_width=True):
             st.experimental_set_query_params(stock_code=code)
             st.experimental_rerun()
 

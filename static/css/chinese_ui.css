@@ -76,9 +76,9 @@ a[href*="streamlit.io"] {
     margin-top: 5px;
 }
 
-/* 确保主内容区域不被遮挡 */
+/* 确保主内容区域不被遮挡（统一更小的顶部留白） */
 .main .block-container {
-    padding-top: 0 !important;
+    padding-top: 0.25rem !important;
     max-width: 100% !important;
 }
 
@@ -89,9 +89,19 @@ a[href*="streamlit.io"] {
     padding: 0 !important;
 }
 
-/* 隐藏Streamlit默认头部空间 */
+/* 隐藏Streamlit默认头部空间 + 彻底隐藏Header */
 .css-1y4p8pa {
     padding-top: 0 !important;
+}
+[data-testid="stHeader"] {
+    display: none !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+[data-testid="stAppViewContainer"] {
+    padding-top: 0 !important;
+    margin-top: 0 !important;
 }
 
 /* 自定义菜单样式（暗色适配） */
@@ -128,8 +138,8 @@ a[href*="streamlit.io"] {
 
 /* 优化主内容区域（暗色适配） */
 .main .block-container {
-    padding-top: 0.5rem;
-    padding-bottom: 1rem;
+    padding-top: 0.25rem !important;
+    padding-bottom: 0.75rem !important;
 }
 
 /* 自定义按钮样式 */

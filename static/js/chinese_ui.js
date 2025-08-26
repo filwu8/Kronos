@@ -310,12 +310,26 @@ function tightenTopWhitespace() {
         const t = (ec.innerText || '').trim();
         return /🚀\s*Gordon\s+Wang|股票预测系统|RTX\s*5090/.test(t);
 
-// 将标题横幅固定在顶部，并为主容器添加等高占位，防止内容被遮挡
-function pinTitleBanner() {
-    let banner = document.querySelector('.title-banner');
-    if (!banner) return;
+    };
 
+
+
+
+    const titleIdx = containers.findIndex(isTitleContainer);
+    if (titleIdx > 0) {
+        for (let i = 0; i < titleIdx; i++) {
+            const ec = containers[i];
+            ec.style.display = 'none';
+            ec.setAttribute('data-collapsed', 'true');
+        }
+    }
+}
+
+
+function pinTitleBanner() {
+    // 始终移除系统Header占位（即使标题尚未渲染）
     const header = document.querySelector('[data-testid="stHeader"]');
+    if (header) header.style.setProperty('display', 'none', 'important');
 
     function ensurePortal() {
         let portal = document.getElementById('title-banner-portal');
@@ -327,24 +341,24 @@ function pinTitleBanner() {
             });
             document.body.appendChild(portal);
         }
+        return portal;
+    }
+
+    function apply() {
+        const banner = document.querySelector('.title-banner');
+        // 标题可能尚未渲染，等待后续MutationObserver回调
+        if (!banner) return;
+
+        // 将横幅挂到 body 顶层门户，避免父级 transform 影响
+        const portal = ensurePortal();
         if (banner.parentNode !== portal) {
-            portal.appendChild(banner); // 移动节点到 body 顶层，避开上层 transform 影响
-            // 重置横幅在门户内的定位与边距
+            portal.appendChild(banner);
             banner.style.position = 'relative';
             banner.style.top = '0px';
             banner.style.left = '0';
             banner.style.right = '0';
             banner.style.margin = '0';
         }
-        return portal;
-    }
-
-    function apply() {
-        // 彻底移除系统Header占位
-        if (header) header.style.setProperty('display', 'none', 'important');
-
-        // 确保门户存在并将横幅挂到 body 顶层
-        const portal = ensurePortal();
 
         // 记录横幅高度，供主容器预留占位
         const h = Math.ceil(banner.getBoundingClientRect().height);
@@ -354,7 +368,7 @@ function pinTitleBanner() {
         // 将根滚动容器的 padding-top 设为横幅高度，避免横幅覆盖内容
         const mainContainer = document.querySelector('.main .block-container');
         if (mainContainer) {
-            mainContainer.style.paddingTop = `calc(var(--title-banner-h, ${h}px) + 0.1rem)`;
+            mainContainer.style.paddingTop = `calc(var(--title-banner-h, ${h}px) + 0.05rem)`;
         }
     }
 
@@ -363,18 +377,6 @@ function pinTitleBanner() {
     window.addEventListener('resize', () => requestAnimationFrame(apply));
     const obs = new MutationObserver(() => requestAnimationFrame(apply));
     obs.observe(document.body, { childList: true, subtree: true, attributes: true });
-}
-
-    };
-
-    const titleIdx = containers.findIndex(isTitleContainer);
-    if (titleIdx > 0) {
-        for (let i = 0; i < titleIdx; i++) {
-            const ec = containers[i];
-            ec.style.display = 'none';
-            ec.setAttribute('data-collapsed', 'true');
-        }
-    }
 }
 
 function initializeChineseUI() {
@@ -387,7 +389,7 @@ function initializeChineseUI() {
     tightenTopWhitespace();
 
     // 保留/恢复自定义导航栏（如有）
-    addCustomNavbar();
+    // addCustomNavbar(); // 暂停插入自定义导航栏，避免与标题横幅叠加造成顶部间距
 
     // 固定标题横幅
     pinTitleBanner();

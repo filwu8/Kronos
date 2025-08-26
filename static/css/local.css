@@ -6,8 +6,8 @@
     z-index: 1000;
     backdrop-filter: blur(6px);
     background: linear-gradient(180deg, rgba(14,17,23,0.85), rgba(14,17,23,0.65) 60%, rgba(14,17,23,0));
-    padding: 0.5rem 0.5rem 0.25rem 0.5rem;
-    margin: 0 -0.5rem 0.25rem -0.5rem; /* 略微扩展横向，覆盖容器边距 */
+    padding: 0.35rem 0.5rem 0.15rem 0.5rem; /* 更紧凑的内边距 */
+    margin: 0 -0.5rem 0.1rem -0.5rem; /* 更小的下边距 */
     border-bottom: 1px solid rgba(255,255,255,0.06);
 }
 
