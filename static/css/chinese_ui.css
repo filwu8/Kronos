@@ -13,7 +13,7 @@
 }
 
 /* 隐藏右上角菜单 */
-.css-1rs6os, .css-17eq0hr {
+[data-testid="stHeader"] .css-1rs6os, [data-testid="stHeader"] .css-17eq0hr {
     display: none !important;
 }
 
@@ -34,32 +34,23 @@ a[href*="streamlit.io"] {
     display: none !important;
 }
 
-/* 隐藏右上角的设置菜单 */
-.css-1kyxreq, .css-1v0mbdj {
+/* 隐藏右上角的设置菜单（仅限页头范围） */
+[data-testid="stHeader"] .css-1kyxreq, [data-testid="stHeader"] .css-1v0mbdj {
     display: none !important;
 }
 
-/* 隐藏顶部工具栏 */
-.css-18e3th9 {
+/* 隐藏顶部工具栏（仅限页头范围） */
+[data-testid="stHeader"] .css-18e3th9 {
     display: none !important;
 }
 
 /* 隐藏GitHub链接等 */
-.css-1d391kg .css-1v0mbdj {
-    display: none !important;
-}
+
 
 /* AGGRESSIVE TOP SPACING REMOVAL - Multiple selectors to ensure coverage */
 [data-testid="stHeader"],
-.stApp > header,
-header[data-testid="stHeader"] {
+[data-testid="stHeader"] {
     display: none !important;
-    height: 0 !important;
-    min-height: 0 !important;
-    max-height: 0 !important;
-    margin: 0 !important;
-    padding: 0 !important;
-    border: none !important;
 }
 
 /* Remove all top spacing from main containers */
@@ -193,27 +184,22 @@ header[data-testid="stHeader"] {
     box-shadow: 0 4px 8px rgba(0,0,0,0.2);
 }
 
-/* SIDEBAR BUTTON CONSISTENCY - Prevent text wrapping and ensure uniform size */
+/* SIDEBAR BUTTON CONSISTENCY - 防止换行，保持等宽，不固定高度 */
 .css-1d391kg .stButton > button,
 [data-testid="stSidebar"] .stButton > button,
 .sidebar .stButton > button {
-    min-width: 200px !important;
     width: 100% !important;
-    height: 45px !important;
-    min-height: 45px !important;
+    min-height: 40px !important; /* 只设最小高度，避免列布局被撑破 */
     white-space: nowrap !important;
     overflow: hidden !important;
     text-overflow: ellipsis !important;
-    display: flex !important;
+    display: inline-flex !important;
     align-items: center !important;
     justify-content: center !important;
-    font-size: 14px !important;
-    line-height: 1.2 !important;
-    padding: 8px 12px !important;
     box-sizing: border-box !important;
 }
 
-/* Ensure sidebar buttons don't wrap text */
+/* 侧栏按钮容器占满列宽 */
 .css-1d391kg .stButton,
 [data-testid="stSidebar"] .stButton,
 .sidebar .stButton {
@@ -282,7 +268,7 @@ header[data-testid="stHeader"] {
     .custom-navbar h1 {
         font-size: 18px;
     }
-    
+
     .main .block-container {
         padding-left: 1rem;
         padding-right: 1rem;

@@ -9,6 +9,7 @@
     padding: 0.35rem 0.5rem 0.15rem 0.5rem; /* 更紧凑的内边距 */
     margin: 0 -0.5rem 0.1rem -0.5rem; /* 更小的下边距 */
     border-bottom: 1px solid rgba(255,255,255,0.06);
+    pointer-events: none; /* 不拦截点击，折叠按钮可点 */
 }
 
 @supports not ((-webkit-backdrop-filter: none) or (backdrop-filter: none)) {
@@ -116,7 +117,7 @@
 .gradient-title.glow::after {
     content: "";
     position: absolute;
-    left: -10%;
+    left: -15%;
     top: 10%;
     width: 20%;
     height: 80%;
@@ -131,14 +132,13 @@
         rgba(189,16,224,0.00) 100%);
     transform: skewX(-20deg);
     filter: blur(10px);
+    pointer-events: none;
+    animation: sweep 3.6s ease-in-out infinite;
+}
 
 /* 横幅固定后为主内容预留等高占位，避免遮挡 */
 .main .block-container {
     padding-top: calc(var(--title-banner-h, 0px) + 0.25rem) !important;
-}
-
-    pointer-events: none;
-    animation: sweep 3.6s ease-in-out infinite;
 }
 
 @keyframes sweep {

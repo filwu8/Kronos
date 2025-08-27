@@ -12,53 +12,21 @@ from datetime import datetime, timedelta
 import logging
 from typing import Dict, List, Optional, Tuple
 import warnings
+from pathlib import Path
 
 # 添加项目根目录到路径
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+MODEL_IMPORT_OK = True
 try:
     from model import Kronos, KronosTokenizer, KronosPredictor
-except ImportError:
-    # 如果无法导入，创建模拟类
-    logging.warning("无法导入Kronos模型，使用模拟预测")
-    
-    class MockKronosPredictor:
-        def __init__(self, *args, **kwargs):
-            self.device = kwargs.get('device', 'cpu')
-            
-        def predict(self, df, x_timestamp, y_timestamp, pred_len, **kwargs):
-            # 生成模拟预测数据
-            last_close = df['close'].iloc[-1]
-            dates = y_timestamp
-            
-            # 生成随机波动的价格预测
-            np.random.seed(42)
-            returns = np.random.normal(0, 0.02, pred_len)  # 2%的日波动率
-            
-            pred_data = []
-            current_price = last_close
-            
-            for i, ret in enumerate(returns):
-                current_price *= (1 + ret)
-                # 生成OHLC数据
-                high = current_price * (1 + abs(np.random.normal(0, 0.01)))
-                low = current_price * (1 - abs(np.random.normal(0, 0.01)))
-                open_price = current_price * (1 + np.random.normal(0, 0.005))
-                volume = df['volume'].mean() * (1 + np.random.normal(0, 0.3))
-                amount = volume * current_price
-                
-                pred_data.append({
-                    'open': open_price,
-                    'high': max(high, open_price, current_price),
-                    'low': min(low, open_price, current_price),
-                    'close': current_price,
-                    'volume': max(volume, 0),
-                    'amount': max(amount, 0)
-                })
-            
-            return pd.DataFrame(pred_data, index=dates)
-    
-    KronosPredictor = MockKronosPredictor
+except ImportError as e:
+    # 延迟处理：启动不立即使用模拟，优先尝试本地真实模型
+    logging.error(f"导入Kronos模型模块失败: {e}")
+    MODEL_IMPORT_OK = False
+    Kronos = None
+    KronosTokenizer = None
+    KronosPredictor = None
 
 from .data_fetcher import AStockDataFetcher
 
@@ -126,48 +94,63 @@ class StockPredictionService:
         self._load_model()
     
     def _load_model(self):
-        """加载Kronos模型"""
+        """加载Kronos模型（优先使用本地真实模型）"""
         try:
-            if self.use_mock:
-                logger.info("使用模拟预测模型")
-                self.predictor = KronosPredictor(device=self.device)
-                self.model_loaded = True
-                return
-            
             logger.info("开始加载Kronos模型...")
-            
+
             # 检查设备可用性
             if self.device == "cuda" and not torch.cuda.is_available():
                 logger.warning("CUDA不可用，切换到CPU")
                 self.device = "cpu"
-            
-            # 加载tokenizer和model
-            try:
-                tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-                model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
-                
-                # 创建预测器
-                self.predictor = KronosPredictor(
-                    model=model, 
-                    tokenizer=tokenizer, 
-                    device=self.device,
-                    max_context=self.default_params['max_context'],
-                    clip=self.default_params['clip']
-                )
-                
-                self.model_loaded = True
-                logger.info(f"Kronos模型加载成功，设备: {self.device}")
-                
-            except Exception as e:
-                logger.error(f"加载预训练模型失败: {str(e)}")
-                logger.info("模型加载失败，但继续使用真实数据")
-                self.predictor = KronosPredictor(device=self.device)
-                self.model_loaded = True
-                # 保持use_mock=False，继续使用真实数据
-                
+
+            # 1) 优先尝试从本地 volumes/models 加载
+            local_tokenizer = Path("volumes/models/Kronos-Tokenizer-base")
+            local_model = Path("volumes/models/Kronos-small")
+
+            if MODEL_IMPORT_OK and local_tokenizer.exists() and local_model.exists():
+                try:
+                    logger.info("优先从本地 volumes/models 加载真实模型")
+                    tokenizer = KronosTokenizer.from_pretrained(str(local_tokenizer))
+                    model = Kronos.from_pretrained(str(local_model))
+                    self.predictor = KronosPredictor(
+                        model=model,
+                        tokenizer=tokenizer,
+                        device=self.device,
+                        max_context=self.default_params['max_context'],
+                        clip=self.default_params['clip']
+                    )
+                    self.model_loaded = True
+                    logger.info(f"本地模型加载成功，设备: {self.device}")
+                    return
+                except Exception as e:
+                    logger.error(f"本地模型加载失败: {e}")
+
+            # 2) 回退到 HuggingFace 在线仓库
+            if MODEL_IMPORT_OK:
+                try:
+                    logger.info("尝试从 HuggingFace 加载预训练模型")
+                    tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
+                    model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+                    self.predictor = KronosPredictor(
+                        model=model,
+                        tokenizer=tokenizer,
+                        device=self.device,
+                        max_context=self.default_params['max_context'],
+                        clip=self.default_params['clip']
+                    )
+                    self.model_loaded = True
+                    logger.info(f"在线模型加载成功，设备: {self.device}")
+                    return
+                except Exception as e:
+                    logger.error(f"在线模型加载失败: {e}")
+
+            # 3) 如仍失败，明确报错（不启用模拟）
+            raise RuntimeError("Kronos 真实模型加载失败：请检查 volumes/models 下是否存在模型文件，或网络可用性与依赖项。")
+
         except Exception as e:
             logger.error(f"模型加载失败: {str(e)}")
             self.model_loaded = False
+            raise
     
     def prepare_data(self, df: pd.DataFrame, lookback: int, pred_len: int) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
         """

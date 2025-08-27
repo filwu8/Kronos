@@ -81,7 +81,7 @@ def analyze_model_sizes():
     print(f"\n📊 模型大小分析")
     print("=" * 40)
     
-    models_dir = Path("models")
+    models_dir = Path('volumes/models')
     total_size = 0
     
     for model_subdir in models_dir.iterdir():
@@ -210,7 +210,7 @@ def main():
     print("🤖 验证Kronos模型下载结果")
     print("=" * 60)
     
-    models_dir = Path("models")
+    models_dir = Path('volumes/models')
     
     if not models_dir.exists():
         print("❌ models目录不存在")

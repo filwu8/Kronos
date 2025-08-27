@@ -407,20 +407,19 @@ function pinTitleBanner() {
 function fixSidebarButtons() {
     const sidebarButtons = document.querySelectorAll('.css-1d391kg .stButton > button, [data-testid="stSidebar"] .stButton > button');
     sidebarButtons.forEach(button => {
-        button.style.setProperty('min-width', '200px', 'important');
-        button.style.setProperty('width', '100%', 'important');
-        button.style.setProperty('height', '45px', 'important');
-        button.style.setProperty('min-height', '45px', 'important');
+        // 更温和：只处理不换行和溢出
         button.style.setProperty('white-space', 'nowrap', 'important');
         button.style.setProperty('overflow', 'hidden', 'important');
         button.style.setProperty('text-overflow', 'ellipsis', 'important');
-        button.style.setProperty('display', 'flex', 'important');
-        button.style.setProperty('align-items', 'center', 'important');
-        button.style.setProperty('justify-content', 'center', 'important');
-        button.style.setProperty('font-size', '14px', 'important');
-        button.style.setProperty('line-height', '1.2', 'important');
-        button.style.setProperty('padding', '8px 12px', 'important');
         button.style.setProperty('box-sizing', 'border-box', 'important');
+        button.style.removeProperty('height');
+        button.style.removeProperty('min-height');
+        button.style.removeProperty('display');
+        button.style.removeProperty('align-items');
+        button.style.removeProperty('justify-content');
+        button.style.removeProperty('font-size');
+        button.style.removeProperty('line-height');
+        button.style.removeProperty('padding');
     });
 }
 
