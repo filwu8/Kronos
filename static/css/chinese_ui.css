@@ -49,6 +49,41 @@ a[href*="streamlit.io"] {
     display: none !important;
 }
 
+/* AGGRESSIVE TOP SPACING REMOVAL - Multiple selectors to ensure coverage */
+[data-testid="stHeader"],
+.stApp > header,
+header[data-testid="stHeader"] {
+    display: none !important;
+    height: 0 !important;
+    min-height: 0 !important;
+    max-height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+}
+
+/* Remove all top spacing from main containers */
+.stApp,
+[data-testid="stAppViewContainer"],
+.main,
+.main > div,
+.block-container,
+.main .block-container,
+[data-testid="block-container"] {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+
+/* Force zero spacing on all potential top-level containers */
+.css-1y4p8pa,
+.css-k1vhr4,
+.css-18e3th9,
+.css-1d391kg,
+.css-12oz5g7 {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+
 /* 自定义顶部导航栏 - 替代Streamlit默认栏（暗色适配） */
 .custom-navbar {
     background: linear-gradient(135deg, #111827 0%, #0b1220 100%);
@@ -156,6 +191,34 @@ a[href*="streamlit.io"] {
 .stButton > button:hover {
     transform: translateY(-2px);
     box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+/* SIDEBAR BUTTON CONSISTENCY - Prevent text wrapping and ensure uniform size */
+.css-1d391kg .stButton > button,
+[data-testid="stSidebar"] .stButton > button,
+.sidebar .stButton > button {
+    min-width: 200px !important;
+    width: 100% !important;
+    height: 45px !important;
+    min-height: 45px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 14px !important;
+    line-height: 1.2 !important;
+    padding: 8px 12px !important;
+    box-sizing: border-box !important;
+}
+
+/* Ensure sidebar buttons don't wrap text */
+.css-1d391kg .stButton,
+[data-testid="stSidebar"] .stButton,
+.sidebar .stButton {
+    width: 100% !important;
+    margin-bottom: 8px !important;
 }
 
 /* 自定义选择框样式 */

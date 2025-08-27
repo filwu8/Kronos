@@ -327,9 +327,30 @@ function tightenTopWhitespace() {
 
 
 function pinTitleBanner() {
-    // 始终移除系统Header占位（即使标题尚未渲染）
-    const header = document.querySelector('[data-testid="stHeader"]');
-    if (header) header.style.setProperty('display', 'none', 'important');
+    // AGGRESSIVE TOP SPACING REMOVAL
+    function removeTopSpacing() {
+        // Remove all headers
+        const headers = document.querySelectorAll('[data-testid="stHeader"], .stApp > header, header');
+        headers.forEach(header => {
+            header.style.setProperty('display', 'none', 'important');
+            header.style.setProperty('height', '0', 'important');
+            header.style.setProperty('margin', '0', 'important');
+            header.style.setProperty('padding', '0', 'important');
+        });
+
+        // Remove top spacing from all main containers
+        const containers = document.querySelectorAll('.stApp, [data-testid="stAppViewContainer"], .main, .main > div, .block-container, .main .block-container, [data-testid="block-container"]');
+        containers.forEach(container => {
+            container.style.setProperty('margin-top', '0', 'important');
+            container.style.setProperty('padding-top', '0', 'important');
+        });
+
+        // Force body and html to have no top spacing
+        document.body.style.setProperty('margin-top', '0', 'important');
+        document.body.style.setProperty('padding-top', '0', 'important');
+        document.documentElement.style.setProperty('margin-top', '0', 'important');
+        document.documentElement.style.setProperty('padding-top', '0', 'important');
+    }
 
     function ensurePortal() {
         let portal = document.getElementById('title-banner-portal');
@@ -345,6 +366,9 @@ function pinTitleBanner() {
     }
 
     function apply() {
+        // Always remove top spacing first
+        removeTopSpacing();
+
         const banner = document.querySelector('.title-banner');
         // 标题可能尚未渲染，等待后续MutationObserver回调
         if (!banner) return;
@@ -368,15 +392,36 @@ function pinTitleBanner() {
         // 将根滚动容器的 padding-top 设为横幅高度，避免横幅覆盖内容
         const mainContainer = document.querySelector('.main .block-container');
         if (mainContainer) {
-            mainContainer.style.paddingTop = `calc(var(--title-banner-h, ${h}px) + 0.05rem)`;
+            mainContainer.style.paddingTop = `0px`; // Force zero padding
         }
     }
 
     // 初次与后续响应
+    removeTopSpacing(); // Call immediately
     apply();
     window.addEventListener('resize', () => requestAnimationFrame(apply));
     const obs = new MutationObserver(() => requestAnimationFrame(apply));
     obs.observe(document.body, { childList: true, subtree: true, attributes: true });
+}
+
+function fixSidebarButtons() {
+    const sidebarButtons = document.querySelectorAll('.css-1d391kg .stButton > button, [data-testid="stSidebar"] .stButton > button');
+    sidebarButtons.forEach(button => {
+        button.style.setProperty('min-width', '200px', 'important');
+        button.style.setProperty('width', '100%', 'important');
+        button.style.setProperty('height', '45px', 'important');
+        button.style.setProperty('min-height', '45px', 'important');
+        button.style.setProperty('white-space', 'nowrap', 'important');
+        button.style.setProperty('overflow', 'hidden', 'important');
+        button.style.setProperty('text-overflow', 'ellipsis', 'important');
+        button.style.setProperty('display', 'flex', 'important');
+        button.style.setProperty('align-items', 'center', 'important');
+        button.style.setProperty('justify-content', 'center', 'important');
+        button.style.setProperty('font-size', '14px', 'important');
+        button.style.setProperty('line-height', '1.2', 'important');
+        button.style.setProperty('padding', '8px 12px', 'important');
+        button.style.setProperty('box-sizing', 'border-box', 'important');
+    });
 }
 
 function initializeChineseUI() {
@@ -394,6 +439,9 @@ function initializeChineseUI() {
     // 固定标题横幅
     pinTitleBanner();
 
+    // Fix sidebar buttons
+    fixSidebarButtons();
+
     // 翻译页面文本
     translatePage();
 
@@ -410,10 +458,11 @@ if (document.readyState === 'loading') {
     initializeChineseUI();
 }
 
-// 定期检查并翻译新元素
+// 定期检查并翻译新元素，同时修复按钮样式
 setInterval(() => {
     translatePage();
     translateToolbar();
+    fixSidebarButtons(); // Continuously fix sidebar buttons
 }, 2000);
 
 // 监听DOM变化，自动翻译新元素

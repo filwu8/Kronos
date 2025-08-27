@@ -58,7 +58,40 @@ def load_local_resources():
             js_bundle.append(p.read_text(encoding='utf-8'))
 
     # 使用一次 st.markdown 注入，避免 iframe 产生额外占位
-    bundle_html = f"<style>{''.join(css_bundle)}</style>\n<script>{''.join(js_bundle)}</script>"
+    # Add aggressive top spacing removal CSS
+    aggressive_css = """
+/* FORCE REMOVE TOP SPACING - High specificity selectors */
+.stApp, [data-testid="stAppViewContainer"], .main, .main > div,
+.block-container, .main .block-container, [data-testid="block-container"] {
+    margin-top: 0 !important;
+    padding-top: 0 !important;
+}
+
+[data-testid="stHeader"], .stApp > header, header[data-testid="stHeader"] {
+    display: none !important;
+    height: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+}
+
+/* Sidebar button consistency */
+.css-1d391kg .stButton > button, [data-testid="stSidebar"] .stButton > button {
+    min-width: 200px !important;
+    width: 100% !important;
+    height: 45px !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    font-size: 14px !important;
+    padding: 8px 12px !important;
+    box-sizing: border-box !important;
+}
+"""
+
+    bundle_html = f"<style>{aggressive_css}{''.join(css_bundle)}</style>\n<script>{''.join(js_bundle)}</script>"
     st.markdown(bundle_html, unsafe_allow_html=True)
 
 # 加载本地资源
