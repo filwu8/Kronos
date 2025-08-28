@@ -88,10 +88,10 @@ def setup_qlib_data_directory():
     """设置Qlib数据目录"""
     print("\n📁 设置Qlib数据目录...")
     
-    # 创建数据目录
-    data_dir = Path.home() / ".qlib" / "qlib_data" / "cn_data"
+    # 创建数据目录（项目 volumes 下持久化）
+    data_dir = Path.cwd() / "volumes" / "qlib_data" / "cn_data"
     data_dir.mkdir(parents=True, exist_ok=True)
-    
+
     print(f"✅ 数据目录创建: {data_dir}")
     return str(data_dir)
 
@@ -99,7 +99,7 @@ def download_qlib_data_official():
     """使用官方方法下载Qlib数据"""
     print("\n⬇️ 使用官方方法下载Qlib数据...")
     
-    cmd = "python -m qlib.run.get_data qlib_data --target_dir ~/.qlib/qlib_data/cn_data --region cn"
+    cmd = "python -m qlib.run.get_data qlib_data --target_dir ./volumes/qlib_data/cn_data --region cn"
     success = run_command(cmd, "下载官方Qlib数据")
     
     return success
@@ -128,7 +128,7 @@ def verify_qlib_data():
         from qlib.data import D
         
         # 初始化Qlib
-        data_path = str(Path.home() / ".qlib" / "qlib_data" / "cn_data")
+        data_path = str(Path.cwd() / "volumes" / "qlib_data" / "cn_data")
         qlib.init(provider_uri=data_path, region=REG_CN)
         
         # 测试数据访问
@@ -199,7 +199,7 @@ def test_qlib_data():
     
     try:
         # 初始化Qlib
-        data_path = str(Path.home() / ".qlib" / "qlib_data" / "cn_data")
+        data_path = str(Path.cwd() / "volumes" / "qlib_data" / "cn_data")
         qlib.init(provider_uri=data_path, region=REG_CN)
         print(f"✅ Qlib初始化成功: {data_path}")
         
@@ -305,4 +305,3 @@ def main():
 
 if __name__ == "__main__":
     exit(main())
-"""

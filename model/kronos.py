@@ -387,6 +387,12 @@ def sample_from_logits(logits, temperature=1.0, top_k=None, top_p=None, sample_l
 
 
 def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context, pred_len, clip=5, T=1.0, top_k=0, top_p=0.99, sample_count=5, verbose=False):
+    """
+    CPU 优化但保持时间戳与序列长度一致：
+    - 在 CPU 下禁用采样多样性（top_k=0, top_p=1.0）
+    - 保留动态时间戳拼接逻辑，避免长度不匹配
+    - 关闭 tqdm，减少 I/O
+    """
     with torch.no_grad():
         batch_size = x.size(0)
         initial_seq_len = x.size(1)
@@ -399,21 +405,21 @@ def auto_regressive_inference(tokenizer, model, x, x_stamp, y_stamp, max_context
 
         x_token = tokenizer.encode(x, half=True)
 
-        def get_dynamic_stamp(x_stamp, y_stamp, current_seq_len, pred_step):
+        # CPU 下简化采样参数
+        if device.type == 'cpu':
+            top_k = 0
+            top_p = 1.0
 
-            if current_seq_len <= max_context - pred_step:
+        def get_dynamic_stamp(x_stamp, y_stamp, current_seq_len, pred_step):
+            if current_seq_len <= max_context:
                 return torch.cat([x_stamp, y_stamp[:, :pred_step, :]], dim=1)
             else:
                 start_idx = max_context - pred_step
                 return torch.cat([x_stamp[:, -start_idx:, :], y_stamp[:, :pred_step, :]], dim=1)
 
-        if verbose:
-            ran = trange
-        else:
-            ran = range
-        for i in ran(pred_len):
+        ran = range if not verbose else trange
+        for i in ran(int(pred_len)):
             current_seq_len = initial_seq_len + i
-
             if current_seq_len <= max_context:
                 input_tokens = x_token
             else:

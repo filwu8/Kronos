@@ -88,30 +88,28 @@ class PredictionResponse(BaseModel):
 async def startup_event():
     """应用启动时初始化"""
     global prediction_service
-    
+
     logger.info("正在启动股票预测服务...")
-    
+
     # 强制使用真实数据模式
     use_mock = False  # 强制关闭模拟模式
 
     # GPU检测和配置
     import torch
+    # 默认按可用性选择
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
         gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+        device = "cuda"
         logger.info(f"检测到GPU: {gpu_name}")
         logger.info(f"GPU内存: {gpu_memory:.1f} GB")
-
-        # 测试GPU兼容性
+        # 做一次极小的计算烟雾测试，避免 sm 架构不兼容导致运行时错误
         try:
-            test_tensor = torch.randn(10, 10, device="cuda")
-            _ = torch.mm(test_tensor, test_tensor)
-            device = "cuda"
-            logger.info("✅ GPU兼容性测试通过，使用GPU")
+            torch.zeros((1, 1), device="cuda").matmul(torch.ones((1, 1), device="cuda"))
+            logger.info("GPU烟雾测试通过，使用GPU运行")
         except Exception as e:
+            logger.warning(f"GPU烟雾测试失败，回退到CPU: {e}")
             device = "cpu"
-            logger.warning(f"⚠️ GPU兼容性问题，使用CPU: {str(e)}")
-            logger.info("💡 RTX 5090需要更新的PyTorch版本支持")
     else:
         device = "cpu"
         logger.info("未检测到GPU，使用CPU")
@@ -149,17 +147,44 @@ async def root():
 async def health_check():
     """健康检查"""
     global prediction_service
-    
+
     if prediction_service is None:
         raise HTTPException(status_code=503, detail="预测服务未初始化")
-    
+
     status = prediction_service.get_model_status()
-    
+
     return {
         "status": "healthy",
         "model_status": status,
         "timestamp": datetime.now().isoformat()
     }
+
+
+@app.get("/model/status")
+async def model_status():
+    """返回模型与数据获取的当前状态（供前端轮询展示）"""
+    global prediction_service
+    if prediction_service is None:
+        raise HTTPException(status_code=503, detail="预测服务未初始化")
+    return prediction_service.get_model_status()
+
+
+@app.post("/refresh/{stock_code}")
+async def refresh_stock(stock_code: str):
+    """强制在线刷新某只股票的缓存并返回概要"""
+    global prediction_service
+    if prediction_service is None:
+        raise HTTPException(status_code=503, detail="预测服务未初始化")
+    try:
+        fetcher = prediction_service.data_fetcher
+        info = fetcher.refresh_stock_cache(stock_code)
+        if not info:
+            raise HTTPException(status_code=502, detail="在线数据源无返回或解析失败")
+        return {"success": True, "data": info}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/predict", response_model=PredictionResponse)
@@ -168,13 +193,13 @@ async def predict_stock(request: PredictionRequest):
     预测单只股票价格
     """
     global prediction_service
-    
+
     if prediction_service is None:
         raise HTTPException(status_code=503, detail="预测服务未初始化")
-    
+
     try:
         logger.info(f"收到预测请求: {request.stock_code}")
-        
+
         # 执行预测
         result = prediction_service.predict_stock(
             stock_code=request.stock_code,
@@ -185,12 +210,12 @@ async def predict_stock(request: PredictionRequest):
             top_p=request.top_p,
             sample_count=request.sample_count
         )
-        
+
         if not result['success']:
             raise HTTPException(status_code=400, detail=result['error'])
-        
+
         return PredictionResponse(**result)
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -204,29 +229,29 @@ async def batch_predict(request: BatchPredictionRequest):
     批量预测多只股票
     """
     global prediction_service
-    
+
     if prediction_service is None:
         raise HTTPException(status_code=503, detail="预测服务未初始化")
-    
+
     if len(request.stock_codes) > 10:
         raise HTTPException(status_code=400, detail="批量预测最多支持10只股票")
-    
+
     try:
         logger.info(f"收到批量预测请求: {request.stock_codes}")
-        
+
         # 执行批量预测
         results = prediction_service.batch_predict(
             stock_codes=request.stock_codes,
             period=request.period,
             pred_len=request.pred_len
         )
-        
+
         return {
             "success": True,
             "data": results,
             "timestamp": datetime.now().isoformat()
         }
-        
+
     except Exception as e:
         logger.error(f"批量预测请求处理失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"内部服务器错误: {str(e)}")
@@ -238,10 +263,10 @@ async def get_stock_info(stock_code: str):
     获取股票基本信息
     """
     global prediction_service
-    
+
     if prediction_service is None:
         raise HTTPException(status_code=503, detail="预测服务未初始化")
-    
+
     try:
         info = prediction_service.data_fetcher.get_stock_info(stock_code)
         return {
@@ -249,7 +274,7 @@ async def get_stock_info(stock_code: str):
             "data": info,
             "timestamp": datetime.now().isoformat()
         }
-        
+
     except Exception as e:
         logger.error(f"获取股票信息失败: {str(e)}")
         raise HTTPException(status_code=500, detail=f"获取股票信息失败: {str(e)}")
@@ -257,7 +282,7 @@ async def get_stock_info(stock_code: str):
 
 @app.get("/stocks/{stock_code}/history")
 async def get_stock_history(
-    stock_code: str, 
+    stock_code: str,
     period: str = "1y",
     limit: int = 100
 ):
@@ -265,23 +290,23 @@ async def get_stock_history(
     获取股票历史数据
     """
     global prediction_service
-    
+
     if prediction_service is None:
         raise HTTPException(status_code=503, detail="预测服务未初始化")
-    
+
     try:
         df = prediction_service.data_fetcher.fetch_stock_data(stock_code, period=period)
-        
+
         if df is None or df.empty:
             raise HTTPException(status_code=404, detail=f"未找到股票数据: {stock_code}")
-        
+
         # 限制返回数据量
         if len(df) > limit:
             df = df.tail(limit)
-        
+
         # 转换为字典格式
         data = df.reset_index().to_dict('records')
-        
+
         return {
             "success": True,
             "data": {
@@ -292,7 +317,7 @@ async def get_stock_history(
             },
             "timestamp": datetime.now().isoformat()
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
@@ -306,15 +331,85 @@ async def get_model_status():
     获取模型状态信息
     """
     global prediction_service
-    
+
     if prediction_service is None:
         return {
             "model_loaded": False,
             "error": "预测服务未初始化"
         }
-    
+
     status = prediction_service.get_model_status()
     return status
+
+
+# 实时系统资源监控（CPU/GPU）
+@app.get("/metrics/usage")
+async def get_system_usage():
+    """返回当前 CPU 或 GPU 的实时利用率与内存占用（轻量采样）"""
+    try:
+        import psutil
+        import time
+        import torch
+    except Exception as e:
+        return {"success": False, "error": f"依赖缺失: {e}"}
+
+    # CPU 基础信息
+    cpu_percent = psutil.cpu_percent(interval=0.3)  # 轻量阻塞 0.3s 采样
+    mem = psutil.virtual_memory()
+    mem_percent = mem.percent
+    mem_used_gb = round(mem.used / 1024**3, 2)
+    mem_total_gb = round(mem.total / 1024**3, 2)
+
+    usage = {
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "timestamp": datetime.now().isoformat(),
+        "cpu": {
+            "percent": cpu_percent,
+            "mem_percent": mem_percent,
+            "mem_used_gb": mem_used_gb,
+            "mem_total_gb": mem_total_gb,
+        }
+    }
+
+    # 若可用，补充 GPU 信息
+    if torch.cuda.is_available():
+        gpu_info = {"available": True}
+        try:
+            # 显存使用
+            device = torch.device("cuda:0")
+            allocated_gb = round(torch.cuda.memory_allocated(device) / 1024**3, 2)
+            reserved_gb = round(torch.cuda.memory_reserved(device) / 1024**3, 2)
+            total_gb = round(torch.cuda.get_device_properties(device).total_memory / 1024**3, 2)
+
+            # 利用率（优先 NVML，如无则仅返回显存）
+            util_percent = None
+            temperature = None
+            try:
+                import pynvml
+                pynvml.nvmlInit()
+                handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+                util = pynvml.nvmlDeviceGetUtilizationRates(handle)
+                util_percent = int(util.gpu)
+                temperature = int(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
+                pynvml.nvmlShutdown()
+            except Exception:
+                # 没有 NVML 时，仍返回显存占用信息
+                pass
+
+            gpu_info.update({
+                "name": torch.cuda.get_device_name(0),
+                "util_percent": util_percent,  # 可能为 None 表示不可用
+                "temperature": temperature,    # 可能为 None 表示不可用
+                "mem_allocated_gb": allocated_gb,
+                "mem_reserved_gb": reserved_gb,
+                "mem_total_gb": total_gb,
+                "mem_percent": round((allocated_gb / total_gb) * 100, 1) if total_gb else None,
+            })
+        except Exception as e:
+            gpu_info.update({"error": str(e)})
+        usage["gpu"] = gpu_info
+
+    return {"success": True, "data": usage}
 
 
 @app.get("/api/docs")
@@ -368,7 +463,7 @@ async def internal_error_handler(request, exc):
 
 if __name__ == "__main__":
     import uvicorn
-    
+
     # 启动服务
     uvicorn.run(
         "api:app",

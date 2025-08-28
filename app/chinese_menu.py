@@ -196,10 +196,17 @@ def render_chinese_footer():
 def create_chinese_sidebar():
     """创建完全中文化的侧边栏"""
     st.sidebar.markdown("""
-    <div style="text-align: center; padding: 10px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 10px; margin-bottom: 20px;">
-        <h2 style="color: white; margin: 0;">🚀 系统菜单</h2>
-        <p style="color: white; margin: 5px 0 0 0; font-size: 12px; opacity: 0.9;">Gordon Wang 股票预测系统</p>
-    </div>
+    <style>
+      .sys-menu-badge {
+        display: inline-flex; align-items:center; justify-content:center;
+        padding: 4px 10px; border-radius: 14px;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: #fff; font-size: 13px; font-weight: 600; letter-spacing: 0.5px;
+        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+        white-space: nowrap; user-select: none;
+      }
+    </style>
+    <div id="system-menu-banner" class="sys-menu-badge" title="系统菜单">🚀 系统菜单</div>
     """, unsafe_allow_html=True)
 
 def create_sidebar_status_section():
@@ -209,18 +216,51 @@ def create_sidebar_status_section():
     # 系统状态
     st.sidebar.markdown("### 📊 系统状态")
 
-    # 使用更美观的状态显示
-    st.sidebar.markdown("""
-    <div style="background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); padding: 10px; border-radius: 8px; margin: 5px 0;">
-        <div style="color: #155724; font-weight: bold;">🟢 API服务: 正常运行</div>
-    </div>
-    <div style="background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); padding: 10px; border-radius: 8px; margin: 5px 0;">
-        <div style="color: #155724; font-weight: bold;">🟢 GPU加速: RTX 5090 活跃</div>
-    </div>
-    <div style="background: linear-gradient(135deg, #d4edda 0%, #c3e6cb 100%); padding: 10px; border-radius: 8px; margin: 5px 0;">
-        <div style="color: #155724; font-weight: bold;">🟢 数据源: 实时更新</div>
-    </div>
-    """, unsafe_allow_html=True)
+    # 动态状态容器（由前端脚本自动刷新，不触发rerun）
+    st.sidebar.markdown('<div id="sidebar-status-live"></div>', unsafe_allow_html=True)
+    try:
+        import streamlit.components.v1 as components
+        components.html("""
+        <script>
+        (function(){
+          const base = (window.API_BASE_URL || 'http://localhost:8000');
+          async function tick(){
+            try{
+              const r1 = await fetch(base + '/health', {cache:'no-store'});
+              const h = await r1.json();
+              const r2 = await fetch(base + '/model/status', {cache:'no-store'});
+              const ms = await r2.json();
+              const el = parent.document.querySelector('#sidebar-status-live');
+              if(!el) return;
+              const device = (ms.device || 'cpu');
+              const cls = (device === 'cuda') ? 'gpu' : 'cpu';
+              const label = (device === 'cuda') ? 'GPU 加速' : 'CPU 兼容模式';
+              const data_source = (ms.data_source || 'unknown');
+              const cache_status = (ms.cache_status || 'unknown');
+              const cache_written = !!ms.cache_written;
+              const api_ok = (h.status === 'healthy');
+              const ds_map = {cache:'缓存', akshare:'akshare', yfinance:'yfinance', unknown:'未知'};
+              const cs_map = {hit:'命中', miss:'未命中', stale:'过期', unknown:'未知'};
+              const ds_label = ds_map[data_source] || data_source;
+              const cs_label = cs_map[cache_status] || cache_status;
+              const write_label = cache_written ? '已写入' : '未写入';
+              el.innerHTML = `
+                <div class="system-status inline ${cls}">
+                  <span class="icon"></span>
+                  <span class="label">${label}</span>
+                </div>
+                <div style="margin-top:8px;font-size:13px;opacity:0.9;">${api_ok ? '🟢 API服务: 正常运行' : '🔴 API服务: 异常'}</div>
+                <div style="margin-top:4px;font-size:13px;opacity:0.9;">📦 数据源: ${ds_label}（缓存: ${cs_label}/${write_label}）</div>
+                <div style=\"margin-top:4px;font-size:13px;opacity:0.9;\">🧠 模型: ${(ms.model_loaded ? '已加载' : '未加载')}</div>
+              `;
+            }catch(e){}
+          }
+          tick(); setInterval(tick, 2000);
+        })();
+        </script>
+        """, height=0)
+    except Exception:
+        st.sidebar.info("系统状态信息暂不可用")
 
     st.sidebar.markdown("---")
 
@@ -249,13 +289,32 @@ def create_sidebar_status_section():
     # 使用更紧凑的指标显示
     col1, col2 = st.sidebar.columns(2)
 
+    import os, requests
+    api_base = os.getenv("API_BASE_URL", "http://localhost:8000")
+
+    usage = None
+    try:
+        r = requests.get(f"{api_base}/metrics/usage", timeout=2)
+        if r.status_code == 200 and r.json().get('success'):
+            usage = r.json()['data']
+    except Exception:
+        usage = None
+
     with col1:
-        st.metric("GPU利用率", "85%", "↑5%")
-        st.metric("预测速度", "547/s", "↑23")
+        if usage and usage.get('device') == 'cuda' and usage.get('gpu'):
+            gpu = usage['gpu']
+            util = (str(gpu.get('util_percent')) + '%') if gpu.get('util_percent') is not None else (str(gpu.get('mem_percent')) + '%')
+            st.metric("GPU利用率", util)
+            st.metric("显存使用", f"{gpu.get('mem_allocated_gb', 0)} / {gpu.get('mem_total_gb', 0)} GB")
+        else:
+            cpu = (usage or {}).get('cpu', {})
+            st.metric("CPU利用率", f"{cpu.get('percent','-')}%")
+            st.metric("内存使用", f"{cpu.get('mem_used_gb','-')} / {cpu.get('mem_total_gb','-')} GB")
 
     with col2:
-        st.metric("内存使用", "12.5GB", "↑2.1GB")
-        st.metric("响应时间", "2.1s", "↓0.3s")
+        # 速度与响应时间可后续接入真实统计；先显示占位或最近一次耗时
+        st.metric("预测速度", "- /s")
+        st.metric("响应时间", "- s")
 
 if __name__ == "__main__":
     # 测试中文菜单

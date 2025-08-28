@@ -78,35 +78,59 @@ const chineseTranslations = {
     'Custom range': '自定义范围'
 };
 
-// 工具栏中文化函数
+// 工具栏中文化函数（支持 iframe 内的 Plotly 图表）
 function translateToolbar() {
     const tooltipMap = {
-        'Pan': '平移 - 拖拽移动图表',
-        'Box Zoom': '框选缩放 - 选择区域放大',
-        'Zoom in': '放大 - 点击放大图表',
-        'Zoom out': '缩小 - 点击缩小图表',
-        'Autoscale': '自适应 - 自动最佳视角',
-        'Reset axes': '重置 - 回到原始视图',
-        'Download plot as a png': '保存 - 下载高清图片'
+        'Pan': '平移',
+        'Box Zoom': '框选缩放',
+        'Zoom in': '放大',
+        'Zoom out': '缩小',
+        'Autoscale': '自适应',
+        'Reset axes': '重置',
+        'Download plot as a png': '保存图片'
     };
 
-    let translated = 0;
+    function applyInDocument(doc) {
+        let translated = 0;
+        const nodes = doc.querySelectorAll('.modebar-btn, [data-title]');
+        nodes.forEach(btn => {
+            const key = btn.getAttribute('data-title') || btn.getAttribute('title') || btn.getAttribute('aria-label');
+            if (key && tooltipMap[key]) {
+                const zh = tooltipMap[key];
+                btn.setAttribute('data-title', zh);
+                btn.setAttribute('title', zh);
+                btn.setAttribute('aria-label', zh);
+                translated++;
+            }
+        });
+        return translated;
+    }
 
-    // 翻译工具栏按钮（同时处理 data-title / title / aria-label）
-    document.querySelectorAll('.modebar-btn').forEach(btn => {
-        const key = btn.getAttribute('data-title') || btn.getAttribute('title') || btn.getAttribute('aria-label');
-        if (key && tooltipMap[key]) {
-            const zh = tooltipMap[key];
-            btn.setAttribute('data-title', zh);
-            btn.setAttribute('title', zh);
-            btn.setAttribute('aria-label', zh);
-            translated++;
+    // 应用于当前文档
+    let total = applyInDocument(document);
+
+    // 同时尝试应用到所有 iframe 内部（Plotly 通常渲染在 iframe 内）
+    const iframes = Array.from(document.querySelectorAll('iframe'));
+    iframes.forEach(iframe => {
+        try {
+            const idoc = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document);
+            if (idoc) {
+                total += applyInDocument(idoc);
+                // 监听 iframe 内部的变化，自动重写标题
+                const observer = new MutationObserver(() => setTimeout(() => applyInDocument(idoc), 50));
+                observer.observe(idoc.body || idoc, { childList: true, subtree: true });
+            }
+        } catch (e) {
+            // 某些跨域或沙箱限制的 iframe 可能无法访问，忽略
         }
     });
 
-    console.log(`🔧 工具栏中文化: 翻译了 ${translated} 个按钮`);
-    return translated;
+    console.log(`🔧 工具栏中文化: 总计翻译 ${total} 个按钮`);
+    return total;
 }
+// 每隔 1 秒强制翻译一次，确保动态渲染后仍为中文
+setInterval(translateToolbar, 1000);
+
 
 // 通用文本翻译函数
 function translateText(element) {

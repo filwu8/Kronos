@@ -64,6 +64,17 @@ def load_local_resources():
 [data-testid="stHeader"] { display: none !important; }
 """
 
+    # 限制标题跑马灯位移范围，避免溢出
+    css_bundle.append("""
+    .title-banner { overflow: hidden; }
+    .main-header.moving { animation: rainbow-move 8s linear infinite; }
+    @keyframes rainbow-move {
+      0% { transform: translateX(0); }
+      85% { transform: translateX(0); }
+      100% { transform: translateX(0); }
+    }
+    """)
+
     bundle_html = f"<style>{aggressive_css}{''.join(css_bundle)}</style>\n<script>{''.join(js_bundle)}</script>"
     st.markdown(bundle_html, unsafe_allow_html=True)
 
@@ -110,7 +121,7 @@ def get_stock_prediction(stock_code, **params):
         response = requests.post(
             f"{API_BASE_URL}/predict",
             json=payload,
-            timeout=60
+            timeout=120  # 压缩超时：避免前端长期挂起，后端内部有CPU回退与缓存
         )
 
         if response.status_code == 200:
@@ -162,206 +173,313 @@ def create_price_chart(historical_data, predictions, stock_info):
         # 准备历史数据
         hist_df = pd.DataFrame(historical_data)
 
-        # 处理历史数据的日期字段
+        # 处理历史数据的日期字段（优先使用字符串，避免浏览器/时区偏移）
         if 'date' in hist_df.columns:
-            # 确保日期格式正确
-            hist_df['date'] = pd.to_datetime(hist_df['date'], errors='coerce')
-            # 移除无效日期
-            hist_df = hist_df.dropna(subset=['date'])
+            hist_df['date_str'] = hist_df['date'].astype(str)
         else:
-            # 如果没有日期字段，生成工作日日期序列
-            hist_df['date'] = pd.date_range(
-                end=pd.Timestamp.now().date(),
-                periods=len(hist_df),
-                freq='B'  # 工作日频率
+            # 如果没有日期字段，生成工作日日期字符串序列
+            tmp_dates = pd.bdate_range(end=pd.Timestamp.today().normalize(), periods=len(hist_df))
+            hist_df['date_str'] = pd.Series(tmp_dates).dt.strftime('%Y-%m-%d')
+
+
+        # 统一历史数据X轴（无论是否存在 date 列，都提供字符串X轴）
+        hist_x = (
+            hist_df['date_str'] if 'date_str' in hist_df.columns else (
+                hist_df['date'].astype(str) if 'date' in hist_df.columns else pd.Series(range(len(hist_df))).astype(str)
             )
+        )
+
+        # 为悬浮提示准备日期标签（YY-MM-DD）
+        if 'date_str' in hist_df.columns:
+            _hist_dt = pd.to_datetime(hist_df['date_str'], errors='coerce')
+            hist_df['date_label'] = _hist_dt.dt.strftime('%Y-%m-%d')
+        elif 'date' in hist_df.columns:
+            _hist_dt = pd.to_datetime(hist_df['date'], errors='coerce')
+            hist_df['date_label'] = _hist_dt.dt.strftime('%Y-%m-%d')
+        else:
+            # 无日期信息，使用X轴字符串兜底
+            _tmp = pd.to_datetime(hist_x, errors='coerce')
+            hist_df['date_label'] = _tmp.dt.strftime('%Y-%m-%d').fillna(hist_x)
+
 
         # 准备预测数据
         pred_df = pd.DataFrame(predictions)
 
-        # 处理预测数据的日期字段
+        # 处理预测数据的日期字段（统一字符串，避免浏览器解析偏移）
         if 'date' in pred_df.columns:
-            pred_df['date'] = pd.to_datetime(pred_df['date'], errors='coerce')
+            pred_df['date'] = pred_df['date'].astype(str)
         else:
-            # 生成预测日期序列，基于历史数据的最后日期
-            if len(hist_df) > 0 and 'date' in hist_df.columns:
-                last_hist_date = hist_df['date'].max()
-                # 生成下一个工作日开始的预测日期
-                pred_df['date'] = pd.date_range(
-                    start=last_hist_date + pd.Timedelta(days=1),
-                    periods=len(pred_df),
-                    freq='B'  # 工作日频率
-                )
-            else:
-                # 如果没有历史日期，从今天开始
-                pred_df['date'] = pd.date_range(
-                    start=pd.Timestamp.now().date() + pd.Timedelta(days=1),
-                    periods=len(pred_df),
-                    freq='B'
-                )
+            if len(pred_df) > 0:
+                # 生成预测日期序列（字符串）
+                if len(hist_df) > 0 and 'date' in hist_df.columns:
+                    hist_df = hist_df.sort_values('date')
+                    last_hist_str = str(hist_df['date'].iloc[-1])
+                    last_dt = pd.to_datetime(last_hist_str, errors='coerce')
+                    pred_dates = pd.bdate_range(start=last_dt + pd.Timedelta(days=1), periods=len(pred_df))
+                else:
+                    pred_dates = pd.bdate_range(start=pd.Timestamp.now().normalize() + pd.Timedelta(days=1), periods=len(pred_df))
+                pred_df['date'] = pd.Series(pred_dates).dt.strftime('%Y-%m-%d')
 
-        # 验证数据完整性
-        required_cols = ['open', 'high', 'low', 'close', 'volume']
+        # 额外保障：去掉与历史重叠的预测日期（字符串比较）
+        if len(hist_df) > 0 and 'date' in hist_df.columns and len(pred_df) > 0 and 'date' in pred_df.columns:
+            hist_df = hist_df.sort_values('date')
+            last_hist_str = str(hist_df['date'].iloc[-1])
+            pred_df = pred_df[pred_df['date'] > last_hist_str]
 
-        # 检查历史数据
-        for col in required_cols:
+        # 历史数据完整性（仅要求历史K线必要列）
+        hist_required = ['open', 'high', 'low', 'close', 'volume']
+        for col in hist_required:
             if col not in hist_df.columns:
                 print(f"历史数据缺少列: {col}")
                 return None
-
-        # 检查预测数据
-        for col in required_cols:
-            if col not in pred_df.columns:
-                print(f"预测数据缺少列: {col}")
-                return None
-
-        # 确保数据类型正确
-        for col in required_cols:
+        for col in hist_required:
             hist_df[col] = pd.to_numeric(hist_df[col], errors='coerce')
-            pred_df[col] = pd.to_numeric(pred_df[col], errors='coerce')
-
-        # 移除空值
-        hist_df = hist_df.dropna(subset=required_cols)
-        pred_df = pred_df.dropna(subset=required_cols)
-
+        hist_df = hist_df.dropna(subset=hist_required)
         if len(hist_df) == 0:
             print("历史数据为空")
             return None
 
-        if len(pred_df) == 0:
-            print("预测数据为空")
-            return None
+        # 预测数据为可选：仅对存在的列做转换
+        if len(pred_df) > 0:
+            for c in ['open','high','low','close','volume']:
+                if c in pred_df.columns:
+                    pred_df[c] = pd.to_numeric(pred_df[c], errors='coerce')
+            # 按可用列过滤空值（至少需要 close 才绘制预测均值）
+            if 'close' in pred_df.columns:
+                pred_df = pred_df.dropna(subset=['close'])
 
-        # 创建子图
+        # 创建两行子图（上：K线；下：成交量），共享X轴，避免遮挡
         fig = make_subplots(
             rows=2, cols=1,
-            subplot_titles=('股价走势', '成交量'),
-            vertical_spacing=0.1,
-            row_heights=[0.7, 0.3]
+            shared_xaxes=False,
+            vertical_spacing=0.03,
+            row_heights=[0.70, 0.30]
         )
 
-        # 历史价格线
-        fig.add_trace(
-            go.Scatter(
-                x=hist_df['date'],
-                y=hist_df['close'],
-                mode='lines',
-                name='历史价格',
-                line=dict(color='blue', width=2),
-                hovertemplate='<b>历史价格</b><br>' +
-                             '日期: %{x|%Y-%m-%d}<br>' +
-                             '收盘价: ¥%{y:.2f}<extra></extra>'
-            ),
-            row=1, col=1
-        )
-
-        # 获取真实的蒙特卡洛不确定性区间
-        if 'close_upper' in pred_df.columns and 'close_lower' in pred_df.columns:
-            # 使用真实的蒙特卡洛预测区间
-            pred_upper = pred_df['close_upper']
-            pred_lower = pred_df['close_lower']
+        # 成交量单位自适应（仅两档）：手 / 万手（预测成交量可选）
+        # 成交量转为数值，避免字符串/缺失导致柱子等高
+        hist_df['_volume_num'] = pd.to_numeric(hist_df['volume'], errors='coerce') if 'volume' in hist_df.columns else pd.Series([0]*len(hist_df))
+        vol_max_hist = float(hist_df['_volume_num'].fillna(0).max()) if len(hist_df) > 0 else 0.0
+        vol_max_pred = float(pd.to_numeric(pred_df['volume'], errors='coerce').fillna(0).max()) if (len(pred_df) > 0 and ('volume' in pred_df.columns)) else 0.0
+        vol_max = max(vol_max_hist, vol_max_pred)
+        if vol_max < 1e4:
+            vol_unit = '手'; vol_factor = 1.0; vol_decimals = 0
         else:
-            # 回退到模拟区间
-            pred_mean = pred_df['close']
-            pred_volatility = pred_mean * 0.15
-            pred_upper = pred_mean + pred_volatility
-            pred_lower = pred_mean - pred_volatility
+            vol_unit = '万手'; vol_factor = 1e4; vol_decimals = 2
 
-        # 预测不确定性区间 (阴影区域)
+        hist_vol_plot = hist_df['_volume_num'].fillna(0) / vol_factor
+        pred_vol_plot = (pd.to_numeric(pred_df['volume'], errors='coerce').fillna(0) / vol_factor) if ('volume' in pred_df.columns and len(pred_df) > 0) else None
+        # 按中文规则构建成交量标签与K线悬浮文本
+        vol_label = hist_vol_plot.map(lambda v: f"{v:.2f} 万手" if vol_unit == '万手' else f"{v:.0f} 手")
+
+
+        # 计算涨跌额/涨跌幅并构建K线悬浮文本
+        hist_df['prev_close'] = pd.to_numeric(hist_df['close'], errors='coerce').shift(1)
+        hist_df['chg'] = pd.to_numeric(hist_df['close'], errors='coerce') - hist_df['prev_close']
+        hist_df['chg_pct'] = (hist_df['chg'] / hist_df['prev_close']) * 100
+        hist_df['chg_disp'] = hist_df['chg'].map(lambda x: '-' if pd.isna(x) else f"{x:+.2f}")
+        hist_df['chg_pct_disp'] = hist_df['chg_pct'].map(lambda x: '-' if (pd.isna(x) or np.isinf(x)) else f"{x:+.2f}%")
+
+        hist_hover_text = [
+            f"<b>历史K线</b><br>"
+            f"日期: {d}<br>"
+            f"开盘: ¥{o:.2f}<br>"
+            f"最高: ¥{h:.2f}<br>"
+            f"最低: ¥{l:.2f}<br>"
+            f"收盘: ¥{c:.2f}<br>"
+            f"涨跌额: {da}<br>"
+            f"涨跌幅: {dp}<br>"
+            f"成交量: {vl}"
+            for d,o,h,l,c,da,dp,vl in zip(
+                hist_df['date_label'], hist_df['open'], hist_df['high'], hist_df['low'], hist_df['close'], hist_df['chg_disp'], hist_df['chg_pct_disp'], vol_label
+            )
+        ]
+
+        # 构建成交量悬浮文本（历史/预测）
+        hist_bar_text = [f"日期: {d}<br>成交量: {vl}" for d, vl in zip(hist_df['date_label'], vol_label)]
+
+
+        # 历史价格蜡烛图（上图）
         fig.add_trace(
-            go.Scatter(
-                x=pred_df['date'].tolist() + pred_df['date'].tolist()[::-1],
-                y=pred_upper.tolist() + pred_lower.tolist()[::-1],
-                fill='toself',
-                fillcolor='rgba(255, 0, 0, 0.2)',
-                line=dict(color='rgba(255,255,255,0)'),
-                name='预测区间',
-                hoverinfo='skip',
+            go.Candlestick(
+                x=hist_x,
+                open=hist_df['open'],
+                high=hist_df['high'],
+                low=hist_df['low'],
+                close=hist_df['close'],
+                name='历史K线',
+                increasing_line_color='red',
+                decreasing_line_color='green',
+                text=hist_hover_text,
+                hoverinfo='text',
                 showlegend=True
             ),
             row=1, col=1
         )
 
-        # 预测价格线 (均值)
-        fig.add_trace(
-            go.Scatter(
-                x=pred_df['date'],
-                y=pred_df['close'],
-                mode='lines',
-                name='预测均值',
-                line=dict(color='red', width=3),
-                hovertemplate='<b>预测价格</b><br>' +
-                             '日期: %{x|%Y-%m-%d}<br>' +
-                             '预测价: ¥%{y:.2f}<br>' +
-                             '区间: ¥%{customdata[0]:.2f} - ¥%{customdata[1]:.2f}<extra></extra>',
-                customdata=list(zip(pred_lower, pred_upper))
-            ),
-            row=1, col=1
-        )
+        # 预测区间与均值（若有预测数据再绘制）
+        has_pred = (pred_df is not None) and (len(pred_df) > 0) and ('close' in pred_df.columns)
+        if has_pred:
+            # 获取真实的蒙特卡洛不确定性区间
+            if 'close_upper' in pred_df.columns and 'close_lower' in pred_df.columns:
+                pred_upper = pred_df['close_upper']
 
-        # 历史成交量
+                # 为成交量悬浮准备标签（手/万手，中文格式）
+                vol_label = hist_vol_plot.map(lambda v: f"{v:.2f} {vol_unit}" if vol_unit == '万手' else f"{v:.0f} {vol_unit}")
+
+                pred_lower = pred_df['close_lower']
+            else:
+                pred_mean = pred_df['close']
+                pred_volatility = pred_mean * 0.15
+                pred_upper = pred_mean + pred_volatility
+                pred_lower = pred_mean - pred_volatility
+
+            # 预测不确定性区间 (阴影区域)
+            fig.add_trace(
+                go.Scatter(
+                    x=pred_df['date'].astype(str).tolist() + pred_df['date'].astype(str).tolist()[::-1],
+                    y=pred_upper.tolist() + pred_lower.tolist()[::-1],
+                    fill='toself',
+                    fillcolor='rgba(255, 0, 0, 0.2)',
+                    line=dict(color='rgba(255,255,255,0)'),
+                    name='预测区间',
+                    hoverinfo='skip',
+                    showlegend=True
+                ),
+                row=1, col=1
+            )
+
+
+            # 计算预测相对历史最后收盘的涨跌额/涨跌幅（中文格式）
+            try:
+                last_close_val = float(hist_df['close'].iloc[-1]) if len(hist_df) > 0 else None
+            except Exception:
+                last_close_val = None
+            if last_close_val is not None and len(pred_df) > 0:
+                pred_df['_chg'] = pd.to_numeric(pred_df['close'], errors='coerce') - last_close_val
+                pred_df['_chg_pct'] = (pred_df['_chg'] / last_close_val) * 100
+                chg_disp = pred_df['_chg'].map(lambda x: '-' if pd.isna(x) else f"{x:+.2f}")
+                chg_pct_disp = pred_df['_chg_pct'].map(lambda x: '-' if (pd.isna(x) or np.isinf(x)) else f"{x:+.2f}%")
+            else:
+                chg_disp = ['-'] * len(pred_df)
+                chg_pct_disp = ['-'] * len(pred_df)
+
+            # 预测价格线 (均值)
+            # 构造更全面的预测悬浮信息（中文）：开/高/低/预测价、涨跌额/幅、区间、成交量
+            try:
+                pred_df['_open'] = pd.to_numeric(pred_df.get('open'), errors='coerce')
+                pred_df['_high'] = pd.to_numeric(pred_df.get('high'), errors='coerce')
+                pred_df['_low']  = pd.to_numeric(pred_df.get('low'), errors='coerce')
+            except Exception:
+                pred_df['_open'] = np.nan; pred_df['_high'] = np.nan; pred_df['_low'] = np.nan
+            open_disp = pred_df['_open'].map(lambda x: '-' if pd.isna(x) else f"¥{x:.2f}")
+            high_disp = pred_df['_high'].map(lambda x: '-' if pd.isna(x) else f"¥{x:.2f}")
+            low_disp  = pred_df['_low'].map(lambda x: '-' if pd.isna(x) else f"¥{x:.2f}")
+            if ('volume' in pred_df.columns and len(pred_df) > 0):
+                _pred_vol = pd.to_numeric(pred_df['volume'], errors='coerce').fillna(0) / vol_factor
+                pred_vol_label = _pred_vol.map(lambda v: f"{v:.2f} 万手" if vol_unit=='万手' else f"{v:.0f} 手")
+            else:
+                pred_vol_label = pd.Series(['-']*len(pred_df))
+
+            fig.add_trace(
+                go.Scatter(
+                    x=pred_df['date'].astype(str),
+                    y=pred_df['close'],
+                    mode='lines',
+                    name='预测均值',
+                    line=dict(color='red', width=3),
+                    hovertemplate='<b>预测价格</b><br>' +
+                                  '预测价: ¥%{y:.2f}<br>' +
+                                  '开盘: %{customdata[4]}<br>' +
+                                  '最高: %{customdata[5]}<br>' +
+                                  '最低: %{customdata[6]}<br>' +
+                                  '涨跌额: %{customdata[2]}<br>' +
+                                  '涨跌幅: %{customdata[3]}<br>' +
+                                  '区间: ¥%{customdata[0]:.2f} - ¥%{customdata[1]:.2f}<br>' +
+                                  '成交量: %{customdata[7]}<extra></extra>',
+                    customdata=np.stack([
+                        np.asarray(pred_lower),
+                        np.asarray(pred_upper),
+                        np.asarray(chg_disp),
+                        np.asarray(chg_pct_disp),
+                        np.asarray(open_disp),
+                        np.asarray(high_disp),
+                        np.asarray(low_disp),
+                        np.asarray(pred_vol_label)
+                    ], axis=-1)
+                ),
+                row=1, col=1
+            )
+
+        # 历史成交量（下图）
         fig.add_trace(
             go.Bar(
-                x=hist_df['date'],
-                y=hist_df['volume'],
+                x=hist_x,
+                y=hist_vol_plot,
                 name='历史成交量',
                 marker_color='lightblue',
-                opacity=0.7,
+                opacity=0.6,
+                customdata=np.stack([hist_df['date_label'].values, hist_vol_plot.values], axis=-1),
                 hovertemplate='<b>历史成交量</b><br>' +
-                             '日期: %{x|%Y-%m-%d}<br>' +
-                             '成交量: %{customdata}<extra></extra>',
-                customdata=[format_volume(v) for v in hist_df['volume']]
+                              '日期: %{customdata[0]}<br>' +
+                              '成交量: %{customdata[1]:.2f} ' + ('万手' if vol_unit=='万手' else '手') + '<extra></extra>'
             ),
             row=2, col=1
         )
 
-        # 预测成交量
-        fig.add_trace(
-            go.Bar(
-                x=pred_df['date'],
-                y=pred_df['volume'],
-                name='预测成交量',
-                marker_color='lightcoral',
-                opacity=0.7,
-                hovertemplate='<b>预测成交量</b><br>' +
-                             '日期: %{x|%Y-%m-%d}<br>' +
-                             '成交量: %{customdata}<extra></extra>',
-                customdata=[format_volume(v) for v in pred_df['volume']]
-            ),
-            row=2, col=1
-        )
+        # 预测成交量（下图，若有）
+        if has_pred and ('volume' in pred_df.columns):
+            fig.add_trace(
+                go.Bar(
+                    x=pred_df['date'].astype(str),
+                    y=pred_vol_plot,
+                    name='预测成交量',
+                    marker_color='lightcoral',
+                    opacity=0.6,
+                    customdata=np.stack([pred_df['date'].astype(str).values, pred_vol_plot.values], axis=-1),
+                    hovertemplate='<b>预测成交量</b><br>' +
+                                  '日期: %{customdata[0]}<br>' +
+                                  '成交量: %{customdata[1]:.2f} ' + ('万手' if vol_unit=='万手' else '手') + '<extra></extra>'
+                ),
+                row=2, col=1
+            )
 
-        # 更新布局
+        # 安全生成标题，避免 stock_info 为空导致下标错误
+        _si = stock_info or {}
+        _name = _si.get('name') or '股票'
+        _code = _si.get('code') or ''
+        _title_text = f"{_name} ({_code}) - 价格预测" if _code else f"{_name} - 价格预测"
+
+        # 布局（上下子图、共享X轴）
         fig.update_layout(
-            title=f"{stock_info['name']} ({stock_info['code']}) - 价格预测",
-            xaxis_title="日期",
-            height=600,
+            title=_title_text,
+            height=680,
+            margin=dict(t=80, l=60, r=20, b=20),
             showlegend=True,
             hovermode='x unified',
-            # 中文化配置
             font=dict(family="Arial, sans-serif", size=12),
-            # 工具栏中文化
             modebar=dict(
                 bgcolor='rgba(255,255,255,0.8)',
                 color='rgba(0,0,0,0.8)',
                 activecolor='rgba(0,0,0,1)',
-                # 自定义工具栏按钮
                 remove=['lasso2d', 'select2d']
             )
         )
+        # 统一头部日期，中文格式（跨版本更稳定）
+        fig.update_xaxes(hoverformat='%Y-%m-%d', row=1, col=1)
+        fig.update_xaxes(hoverformat='%Y-%m-%d', row=2, col=1)
 
+
+        # 轴标题与样式
         fig.update_yaxes(title_text="价格 (元)", row=1, col=1)
-        fig.update_yaxes(title_text="成交量 (手)", row=2, col=1)
+        fig.update_yaxes(title_text=f"成交量 ({vol_unit})", row=2, col=1, showgrid=True)
 
-        # 更新X轴格式
+        # X 轴（统一在底部）
         fig.update_xaxes(
             tickformat='%Y-%m-%d',
-            tickangle=45,
-            row=1, col=1
-        )
-        fig.update_xaxes(
-            tickformat='%Y-%m-%d',
-            tickangle=45,
+            tickangle=0,
+            showgrid=True,
+            ticks="outside",
             row=2, col=1
         )
 
@@ -433,9 +551,11 @@ def render_stock_prediction_content():
     # 标题（主副标题作为一个视觉整体且统一居中）
     logo_uri = get_logo_data_uri()
     if logo_uri:
+        # 根据动画状态决定标题类名
+        animation_state = st.session_state.get('title_animation_state', 'idle')
         title_html = (
             '<div class="title-banner">'
-            '<h1 class="main-header gradient-title glow">'
+            f'<h1 id="main-title" class="main-header gradient-title glow {animation_state}" data-state="{animation_state}">'
             f'<img class="title-logo" src="{logo_uri}" alt="Logo">'
             'Gordon Wang 的股票预测系统'
             '</h1>'
@@ -443,13 +563,27 @@ def render_stock_prediction_content():
             '</div>'
         )
     else:
+        # 根据动画状态决定标题类名
+        animation_state = st.session_state.get('title_animation_state', 'idle')
         title_html = (
             '<div class="title-banner">'
-            '<h1 class="main-header gradient-title glow">Gordon Wang 的股票预测系统</h1>'
+            f'<h1 id="main-title" class="main-header gradient-title glow {animation_state}" data-state="{animation_state}">Gordon Wang 的股票预测系统</h1>'
             '<p class="main-subtitle">基于RTX 5090 GPU加速的智能股票预测平台</p>'
             '</div>'
         )
-    st.markdown(title_html, unsafe_allow_html=True)
+    title_slot = st.empty()
+    # 健康指示器占位
+    status_slot = st.empty()
+
+
+
+    title_slot.markdown(title_html, unsafe_allow_html=True)
+
+    # 本次运行是否已渲染预测结果（用于避免重复渲染）
+    rendered_result = False
+
+
+
 
     # 检查API状态
     if not check_api_health():
@@ -504,14 +638,167 @@ def render_stock_prediction_content():
         top_p = st.slider("核采样概率", 0.1, 1.0, 0.9, 0.05)
         sample_count = st.slider("采样次数", 1, 3, 1)
 
+    # 若未点击“开始预测”，但 session_state 有历史结果，直接回显（不触发侧边栏按钮）
+    last = st.session_state.get('last_prediction')
+    if last and last.get('success') and not rendered_result:
+        data = last['data']
+        summary = data['summary']
+        st.subheader("📊 预测摘要")
+        create_metrics_display(summary)
+        st.subheader("📈 价格走势图")
+        try:
+            fig = create_price_chart(
+                data['historical_data'],
+                data['predictions'],
+                data['stock_info']
+            )
+            if fig is not None:
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.error("无法生成价格走势图（历史数据缺失或格式不符）")
+            rendered_result = True
+        except Exception as e:
+            st.error(f"价格走势图渲染失败: {e}")
+
+    # 清理侧边栏中可能残留的空白按钮（仅影响无文本按钮）
+    try:
+        import streamlit.components.v1 as components
+        # 将“系统菜单”小徽章移动到侧边栏顶部 X 按钮左侧
+        try:
+            import streamlit.components.v1 as components
+            components.html(
+                """
+                <script>
+                (function(){
+                  try{
+                    var doc = parent.document;
+                    var badge = doc.querySelector('#system-menu-banner');
+                    var sidebar = doc.querySelector('[data-testid="stSidebar"]');
+                    var closeBtn = sidebar ? sidebar.querySelector('button[kind="headerClose"]') : null;
+                    if(badge && closeBtn && closeBtn.parentElement){
+                      closeBtn.parentElement.style.display = 'flex';
+                      closeBtn.parentElement.style.alignItems = 'center';
+                      closeBtn.parentElement.style.gap = '8px';
+                      closeBtn.parentElement.insertBefore(badge, closeBtn);
+                      var header = closeBtn.parentElement;
+                      if (header) {
+                        header.style.paddingTop = '4px';
+                        header.style.marginTop = '0';
+                        header.style.minHeight = 'auto';
+                      }
+                      var headerWrap = header && header.parentElement ? header.parentElement : null;
+                      if (headerWrap) {
+                        headerWrap.style.paddingTop = '4px';
+                        headerWrap.style.marginTop = '0';
+                      }
+                    }
+                  }catch(e){}
+                })();
+                </script>
+                """,
+                height=0
+            )
+        except Exception:
+            pass
+        components.html(
+            """
+            <script>
+            (function(){
+              function cleanup(){
+                try{
+                  var doc = parent.document;
+                  var sidebar = doc.querySelector('[data-testid="stSidebar"]') || doc;
+                  var btnWraps = sidebar.querySelectorAll('div[data-testid="baseButton-secondary"]');
+                  btnWraps.forEach(function(w){
+                    var txt = (w.innerText||'').trim();
+                    if(txt === '' || txt === '\u200b') { w.style.display='none'; }
+                  });
+                }catch(e){}
+              }
+              cleanup(); setTimeout(cleanup, 300); setTimeout(cleanup, 1000);
+            })();
+            </script>
+            """,
+            height=0
+        )
+    except Exception:
+        pass
+
+    # 刷新该股票数据（刷新成功后自动触发预测）
+    if st.sidebar.button("🔄 刷新该股票数据", type="secondary", use_container_width=True):
+        try:
+            import requests, os
+            api_base = os.getenv("API_BASE_URL", "http://localhost:8000")
+            r = requests.post(f"{api_base}/refresh/{stock_code}", timeout=30)
+            if r.status_code == 200 and r.json().get('success'):
+                info = r.json()['data']
+                st.sidebar.success(f"已更新: {info['last_date']} 来源: {info['source']}")
+                # 自动触发一次预测
+                st.session_state['auto_trigger_predict'] = True
+                st.experimental_rerun()
+            else:
+                try:
+                    detail = r.json().get('detail')
+                except Exception:
+                    detail = r.text[:200]
+                st.sidebar.error(f"刷新失败: {detail}")
+        except Exception as e:
+            st.sidebar.error(f"刷新失败: {e}")
+
+    # 刷新成功后的自动预测（兜底）
+    if st.session_state.get('auto_trigger_predict'):
+        st.session_state['auto_trigger_predict'] = False
+        st.experimental_rerun()
+
     # 预测按钮（统一侧边栏按钮宽度）
     if st.sidebar.button("🚀 开始预测", type="primary", use_container_width=True):
         if not stock_code:
             st.error("请输入股票代码")
             return
 
+        # 启动动画并即时重渲染标题
+        st.session_state['title_animation_state'] = 'moving'
+        # 立即重绘标题占位，确保动画启动
+        animation_state = st.session_state.get('title_animation_state', 'idle')
+        _logo_uri = get_logo_data_uri()
+        _logo_html = f'<img class="title-logo" src="{_logo_uri}" alt="Logo">' if _logo_uri else ''
+        live_title_html = (
+            '<div class="title-banner">'
+            f'<h1 id="main-title" class="main-header gradient-title glow {animation_state}" data-state="{animation_state}">'
+            f'{_logo_html}'
+            'Gordon Wang 的股票预测系统'
+            '</h1>'
+            '<p class="main-subtitle">基于RTX 5090 GPU加速的智能股票预测平台</p>'
+            '</div>'
+        )
+        # 先绘制标题，再用脚本强制重启动画，确保元素已存在
+        title_slot.markdown(live_title_html, unsafe_allow_html=True)
+        try:
+            import streamlit.components.v1 as components
+            components.html("""
+            <script>
+            (function(){
+              try {
+                setTimeout(function(){
+                  var el = parent && parent.document ? parent.document.getElementById('main-title') : document.getElementById('main-title');
+                  if(!el) return;
+                  el.classList.remove('static');
+                  el.classList.remove('idle');
+                  // 通过移除/添加 moving 触发重排，确保动画启动
+                  el.classList.remove('moving');
+                  void el.offsetWidth;
+                  el.classList.add('moving');
+                }, 80);
+              } catch(e) { /* noop */ }
+            })();
+            </script>
+            """, height=0)
+        except Exception:
+            pass
+
         # 显示加载状态
         with st.spinner(f"正在预测 {stock_code}..."):
+
             # 获取股票信息
             stock_info_response = get_stock_info(stock_code)
 
@@ -533,6 +820,7 @@ def render_stock_prediction_content():
                 sample_count=sample_count
             )
 
+
         # 显示结果
         if result['success']:
             data = result['data']
@@ -551,6 +839,11 @@ def render_stock_prediction_content():
                     data['stock_info']
                 )
                 if fig is not None:
+                    # 生成导出图片的安全文件名，避免 stock_info 为空报错
+                    _si = data.get('stock_info') or {}
+                    _stock_name = _si.get('name') or _si.get('code') or '股票'
+                    _img_filename = f"{_stock_name}_股价预测_{datetime.now().strftime('%Y%m%d')}"
+
                     # 配置简化的中文工具栏
                     config = {
                         'displayModeBar': True,
@@ -578,7 +871,7 @@ def render_stock_prediction_content():
                         ],
                         'toImageButtonOptions': {
                             'format': 'png',
-                            'filename': f'{data["stock_info"]["name"]}_股价预测_{datetime.now().strftime("%Y%m%d")}',
+                            'filename': _img_filename,
                             'height': 800,
                             'width': 1200,
                             'scale': 2  # 高清图片
@@ -586,225 +879,87 @@ def render_stock_prediction_content():
                     }
                     st.plotly_chart(fig, use_container_width=True, config=config)
 
-                    # 使用HTML组件强制执行JavaScript
+                    # 为图表添加“左键锁定 + 键盘左右移动”功能（不绘制新虚线，驱动 Plotly 原生 hover）
                     import streamlit.components.v1 as components
                     components.html("""
                     <script>
-                    // 等待页面完全加载
-                    setTimeout(function() {
-                        const tooltipMap = {
-                            'Pan': '平移 - 拖拽移动图表',
-                            'Box Zoom': '框选缩放 - 选择区域放大',
-                            'Zoom in': '放大 - 点击放大图表',
-                            'Zoom out': '缩小 - 点击缩小图表',
-                            'Autoscale': '自适应 - 自动最佳视角',
-                            'Reset axes': '重置 - 回到原始视图',
-                            'Download plot as a png': '保存 - 下载高清图片'
-                        };
+                    (function(){
+                      function setup(){
+                        const plots = parent.document.querySelectorAll('.js-plotly-plot');
+                        const plt = plots[plots.length-1];
+                        if(!plt || !parent.Plotly) return;
+                        const P = parent.Plotly;
 
-                        function translateToolbar() {
-                            let translated = 0;
-                            const buttons = parent.document.querySelectorAll('.modebar-btn');
+                        // 以第一条曲线的 x 作为参考（x unified 模式会对齐所有 trace）
+                        let xvals = [];
+                        try { xvals = (plt.data && plt.data[0] && plt.data[0].x) ? plt.data[0].x.slice() : []; } catch(e) {}
+                        if(!xvals || xvals.length === 0) return;
 
-                            buttons.forEach(btn => {
-                                const title = btn.getAttribute('title');
-                                if (title && tooltipMap[title]) {
-                                    btn.setAttribute('title', tooltipMap[title]);
-                                    translated++;
-                                }
-                            });
+                        let idx = xvals.length - 1;  // 当前索引
+                        let locked = false;           // 是否锁定（左键切换）
 
-                            console.log('🔧 工具栏中文化: 翻译了 ' + translated + ' 个按钮');
-                            return translated;
+                        function clamp(i){ return Math.max(0, Math.min(i, xvals.length-1)); }
+                        function draw(){
+                          const x = xvals[clamp(idx)];
+                          try { P.Fx.hover(plt, [{xval: x}], ['x']); } catch(e) {}
                         }
 
-                        // 多次尝试翻译
-                        translateToolbar();
-                        setTimeout(translateToolbar, 500);
-                        setTimeout(translateToolbar, 1000);
-                        setTimeout(translateToolbar, 2000);
-
-                        // 监听父页面的变化
-                        const observer = new MutationObserver(function() {
-                            setTimeout(translateToolbar, 100);
-                        });
-
-                        if (parent.document.body) {
-                            observer.observe(parent.document.body, {
-                                childList: true,
-                                subtree: true
-                            });
+                        // hover 跟随：未锁定时更新 idx；锁定时强制回到锁定位置
+                        function onHover(ev){
+                          if (locked) { draw(); return; }
+                          if (ev && ev.points && ev.points[0]) {
+                            const p = ev.points[0];
+                            if (typeof p.pointNumber === 'number') idx = p.pointNumber;
+                            else {
+                              const i = xvals.indexOf(p.x);
+                              if (i >= 0) idx = i;
+                            }
+                          }
                         }
-                    }, 1000);
+
+                        function onKey(e){
+                          if(!locked) return;
+                          if(e.key === 'ArrowLeft') { idx = clamp(idx-1); draw(); e.preventDefault(); }
+                          else if(e.key === 'ArrowRight') { idx = clamp(idx+1); draw(); e.preventDefault(); }
+                        }
+
+                        function toggleLock(){
+                          locked = !locked;
+                          if (locked) {
+                            draw();
+                            parent.window.addEventListener('keydown', onKey);
+                          } else {
+                            parent.window.removeEventListener('keydown', onKey);
+                          }
+                        }
+
+                        // 事件绑定
+                        if (plt.on) {
+                          plt.on('plotly_hover', onHover);
+                          plt.on('plotly_unhover', function(){ if(locked) draw(); });
+                        }
+                        // 左键点击切换锁定
+                        plt.addEventListener('click', function(e){ if(e.button===0){ toggleLock(); e.preventDefault(); }});
+                        // 悬停控制键盘监听
+                        plt.addEventListener('mouseenter', function(){ if(locked) parent.window.addEventListener('keydown', onKey); });
+                        plt.addEventListener('mouseleave', function(){ if(!locked) parent.window.removeEventListener('keydown', onKey); });
+
+                        // 初始定位
+                        draw();
+                      }
+                      setTimeout(setup, 500);
+                      setTimeout(setup, 1200);
+                    })();
                     </script>
                     """, height=0)
 
-                    # 使用更强的方法中文化工具栏
-                    st.markdown("""
-                    <style>
-                    /* 隐藏英文提示，用CSS伪元素显示中文 */
-                    .modebar-btn[data-title="Pan"]:hover::after {
-                        content: "平移 - 拖拽移动图表";
-                        position: absolute;
-                        background: rgba(0,0,0,0.8);
-                        color: white;
-                        padding: 4px 8px;
-                        border-radius: 4px;
-                        font-size: 12px;
-                        white-space: nowrap;
-                        z-index: 1000;
-                        bottom: -30px;
-                        left: 50%;
-                        transform: translateX(-50%);
-                    }
-                    </style>
 
-                    <script>
-                    // 强化的工具栏中文化
-                    function forceTranslateToolbar() {
-                        const tooltipMap = {
-                            'Pan': '平移 - 拖拽移动图表',
-                            'Box Zoom': '框选缩放 - 选择区域放大',
-                            'Zoom in': '放大 - 点击放大图表',
-                            'Zoom out': '缩小 - 点击缩小图表',
-                            'Autoscale': '自适应 - 自动最佳视角',
-                            'Reset axes': '重置 - 回到原始视图',
-                            'Download plot as a png': '保存 - 下载高清图片'
-                        };
 
-                        let translated = 0;
 
-                        // 方法1: 直接修改title属性
-                        document.querySelectorAll('.modebar-btn').forEach(btn => {
-                            const title = btn.getAttribute('title');
-                            if (title && tooltipMap[title]) {
-                                btn.setAttribute('title', tooltipMap[title]);
-                                btn.setAttribute('data-title', title); // 保存原始title
-                                translated++;
-                            }
-                        });
+                    # 简化：移除冗余的工具栏中文化（保留静态资源版本）
+                    st.markdown("")
 
-                        // 方法2: 修改data-title属性（Plotly有时使用这个）
-                        document.querySelectorAll('[data-title]').forEach(btn => {
-                            const title = btn.getAttribute('data-title');
-                            if (title && tooltipMap[title]) {
-                                btn.setAttribute('data-title', tooltipMap[title]);
-                                btn.setAttribute('title', tooltipMap[title]);
-                                translated++;
-                            }
-                        });
 
-                        // 方法3: 查找特定的工具栏按钮类
-                        const buttonSelectors = [
-                            '[data-title="Pan"]',
-                            '[data-title="Box Zoom"]',
-                            '[data-title="Zoom in"]',
-                            '[data-title="Zoom out"]',
-                            '[data-title="Autoscale"]',
-                            '[data-title="Reset axes"]',
-                            '[data-title="Download plot as a png"]'
-                        ];
-
-                        buttonSelectors.forEach(selector => {
-                            const btn = document.querySelector(selector);
-                            if (btn) {
-                                const originalTitle = btn.getAttribute('data-title');
-                                if (tooltipMap[originalTitle]) {
-                                    btn.setAttribute('title', tooltipMap[originalTitle]);
-                                    translated++;
-                                }
-                            }
-                        });
-
-                        console.log('🔧 工具栏中文化: 翻译了 ' + translated + ' 个按钮');
-
-                        // 强制刷新工具栏
-                        const modebar = document.querySelector('.modebar');
-                        if (modebar) {
-                            modebar.style.display = 'none';
-                            setTimeout(() => {
-                                modebar.style.display = 'block';
-                            }, 10);
-                        }
-
-                        return translated;
-                    }
-
-                    // 页面加载后立即执行
-                    if (document.readyState === 'loading') {
-                        document.addEventListener('DOMContentLoaded', forceTranslateToolbar);
-                    } else {
-                        forceTranslateToolbar();
-                    }
-
-                    // 多次尝试，确保成功
-                    setTimeout(forceTranslateToolbar, 100);
-                    setTimeout(forceTranslateToolbar, 500);
-                    setTimeout(forceTranslateToolbar, 1000);
-                    setTimeout(forceTranslateToolbar, 2000);
-                    setTimeout(forceTranslateToolbar, 5000);
-
-                    // 监听Plotly图表事件
-                    window.addEventListener('plotly_afterplot', function() {
-                        setTimeout(forceTranslateToolbar, 100);
-                    });
-
-                    // 监听DOM变化
-                    const observer = new MutationObserver(function(mutations) {
-                        let shouldTranslate = false;
-                        mutations.forEach(function(mutation) {
-                            if (mutation.addedNodes.length > 0) {
-                                mutation.addedNodes.forEach(function(node) {
-                                    if (node.nodeType === 1 && (
-                                        node.classList.contains('modebar') ||
-                                        node.querySelector('.modebar') ||
-                                        node.classList.contains('modebar-btn')
-                                    )) {
-                                        shouldTranslate = true;
-                                    }
-                                });
-                            }
-                        });
-
-                        if (shouldTranslate) {
-                            setTimeout(forceTranslateToolbar, 50);
-                        }
-                    });
-
-                    observer.observe(document.body, {
-                        childList: true,
-                        subtree: true
-                    });
-                    </script>
-                    """, unsafe_allow_html=True)
-
-                    # 添加醒目的工具栏说明
-                    st.info("💡 **图表工具栏中英文对照** (右上角白色工具条)")
-
-                    # 创建工具栏对照表
-                    col1, col2, col3 = st.columns(3)
-
-                    with col1:
-                        st.markdown("""
-                        **🛠️ 基础操作**
-                        - 🖱️ **Pan** = 平移
-                        - 🔍 **Box Zoom** = 框选缩放
-                        - ➕ **Zoom in** = 放大
-                        """)
-
-                    with col2:
-                        st.markdown("""
-                        **🔧 视图控制**
-                        - ➖ **Zoom out** = 缩小
-                        - 🔄 **Autoscale** = 自适应
-                        - 🏠 **Reset axes** = 重置
-                        """)
-
-                    with col3:
-                        st.markdown("""
-                        **💾 导出功能**
-                        - 📷 **Download plot as a png** = 保存图片
-                        """)
 
                     # 图表说明
                     st.markdown("---")
@@ -821,35 +976,13 @@ def render_stock_prediction_content():
                         """)
 
                     with col2:
-                        st.markdown("""
-                        **🛠️ 工具栏使用说明**
+                        pass
 
-                        图表右上角工具栏从左到右依次为：
 
-                        1. **🖱️ 平移 (Pan)**: 拖拽图表移动视角
-                        2. **🔍 框选缩放 (Box Zoom)**: 拖拽选择区域放大
-                        3. **➕ 放大 (Zoom in)**: 点击放大图表
-                        4. **➖ 缩小 (Zoom out)**: 点击缩小图表
-                        5. **🔄 自适应 (Autoscale)**: 自动调整到最佳视角
-                        6. **🏠 重置 (Reset axes)**: 恢复到原始视角
-                        7. **📷 保存 (Download)**: 下载高清PNG图片
 
-                        💡 **提示**: 如果工具栏显示英文，请参考上述对照表
-                        """)
-                else:
-                    st.error("图表创建返回空值，请检查数据格式")
-                    # 显示调试信息
-                    st.write("调试信息:")
-                    st.write(f"历史数据条数: {len(data['historical_data'])}")
-                    st.write(f"预测数据条数: {len(data['predictions'])}")
-                    if len(data['historical_data']) > 0:
-                        st.write(f"历史数据样本: {data['historical_data'][0]}")
-                    if len(data['predictions']) > 0:
-                        st.write(f"预测数据样本: {data['predictions'][0]}")
+
             except Exception as e:
                 st.error(f"图表生成失败: {str(e)}")
-                import traceback
-                st.code(traceback.format_exc())
 
             # 详细信息
             col1, col2 = st.columns(2)
@@ -867,12 +1000,43 @@ def render_stock_prediction_content():
                     st.warning("⚠️ 股票波动率较高，请谨慎投资")
 
             with col2:
-                st.subheader("ℹ️ 模型信息")
+                st.subheader("ℹ️ 模型与数据来源")
                 metadata = data['metadata']
-                st.write(f"**模型版本**: {metadata['model_version']}")
-                st.write(f"**数据源**: {metadata['data_source']}")
-                st.write(f"**预测时间**: {metadata['prediction_time'][:19]}")
-                st.write(f"**模拟模式**: {'是' if metadata['use_mock'] else '否'}")
+                st.write(f"**模型版本**: {metadata.get('model_version','-')}")
+                # 历史数据（核对用）
+                with st.expander("📜 历史数据（核对）"):
+                    try:
+                        hist_df = pd.DataFrame(data['historical_data'])
+                        # 按日期升序
+                        hist_df['date'] = pd.to_datetime(hist_df['date'])
+                        hist_df = hist_df.sort_values('date')
+                        # 成交量单位：手/万手（万手保留2位）
+                        if 'volume' in hist_df.columns:
+                            vmax = float(hist_df['volume'].max()) if len(hist_df) else 0.0
+                            if vmax >= 1e4:
+                                hist_df['成交量 (万手)'] = (hist_df['volume'] / 1e4).round(2)
+                            else:
+                                hist_df['成交量 (手)'] = hist_df['volume'].round(0).astype('Int64')
+
+                        # 选择展示列
+                        cols = ['date', 'open', 'high', 'low', 'close']
+                        if '成交量 (万手)' in hist_df.columns:
+                            cols.append('成交量 (万手)')
+                        elif '成交量 (手)' in hist_df.columns:
+                            cols.append('成交量 (手)')
+                        show_df = hist_df[cols].rename(columns={
+                            'date': '日期', 'open': '开盘价 (元)', 'high': '最高价 (元)', 'low': '最低价 (元)', 'close': '收盘价 (元)'
+                        })
+                        st.dataframe(show_df.tail(200), use_container_width=True)
+                    except Exception as _:
+                        st.info("历史数据暂不可用")
+
+                ds = metadata.get('data_source','unknown')
+                cs = metadata.get('cache_status','unknown')
+                cw = '已写入' if metadata.get('cache_written', False) else '未写入'
+                st.write(f"**数据源**: {ds}（缓存: {cs}/{cw}）")
+                st.write(f"**预测时间**: {metadata.get('prediction_time','')[:19]}")
+                st.write(f"**模拟模式**: {'是' if metadata.get('use_mock') else '否'}")
 
             # 数据表格
             with st.expander("📊 查看预测数据"):
@@ -892,6 +1056,16 @@ def render_stock_prediction_content():
                 # 重命名列
                 pred_df = pred_df.rename(columns=column_names)
 
+                # 成交量单位自适应（两档）：手 / 万手（万手保留2位小数）
+                if '成交量 (手)' in pred_df.columns:
+                    vol_max = float(pred_df['成交量 (手)'].max()) if len(pred_df) else 0.0
+                    if vol_max >= 1e4:
+                        pred_df['成交量 (万手)'] = (pred_df['成交量 (手)'] / 1e4).round(2)
+                        pred_df.drop(columns=['成交量 (手)'], inplace=True)
+                    else:
+                        # 保留整数手
+                        pred_df['成交量 (手)'] = pred_df['成交量 (手)'].round(0).astype('Int64')
+
                 # 格式化数值
                 for col in ['开盘价 (元)', '最高价 (元)', '最低价 (元)', '收盘价 (元)']:
                     if col in pred_df.columns:
@@ -910,9 +1084,26 @@ def render_stock_prediction_content():
             本预测结果仅供参考，不构成投资建议。股票投资存在风险，请根据自身情况谨慎决策。
             预测模型基于历史数据，无法保证未来表现。
             """)
+            # 停止彩虹动画，固定在标题后方，并即时重绘标题
+            st.session_state['title_animation_state'] = 'static'
+            final_state2 = st.session_state.get('title_animation_state', 'static')
+            _logo_uri = get_logo_data_uri()
+            _logo_html = f'<img class="title-logo" src="{_logo_uri}" alt="Logo">' if _logo_uri else ''
+            final_title_html2 = (
+                '<div class="title-banner">'
+                f'<h1 id="main-title" class="main-header gradient-title glow {final_state2}" data-state="{final_state2}">'
+                f'{_logo_html}'
+                'Gordon Wang 的股票预测系统'
+                '</h1>'
+                '<p class="main-subtitle">基于RTX 5090 GPU加速的智能股票预测平台</p>'
+                '</div>'
+            )
+            title_slot.markdown(final_title_html2, unsafe_allow_html=True)
 
         else:
             st.error(f"❌ 预测失败: {result['error']}")
+            # 失败时也停止动画，避免一直运动
+            st.session_state['title_animation_state'] = 'static'
 
     # 示例股票
     st.sidebar.markdown("---")
