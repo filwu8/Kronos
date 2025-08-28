@@ -8,16 +8,10 @@ services:
       dockerfile: scripts/docker/Dockerfile
     container_name: kronos-rtx5090
     restart: unless-stopped
-    
-    # GPU配置
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    
+
+    # GPU配置（Compose v2 推荐写法）
+    gpus: all
+
     # 环境变量
     environment:
       - DOCKER_ENV=1
@@ -30,17 +24,17 @@ services:
       - STREAMLIT_PORT=8501
       - LOG_LEVEL=INFO
       - AUTO_DOWNLOAD_DATA=true
-    
+
     # 端口映射
     ports:
       - "8000:8000"  # API服务
       - "8501:8501"  # Streamlit前端
-    
+
     # 数据卷挂载
     volumes:
       - ../../volumes:/volumes
       - gpu_cache:/root/.cache
-    
+
     # 健康检查
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
@@ -48,7 +42,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 60s
-    
+
     # 网络配置
     networks:
       - kronos-network

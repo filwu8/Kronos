@@ -1,0 +1,11 @@
+d:\Docker-Devops\Aigc\Kronos\.venv-gpu\Lib\site-packages\torch\cuda\__init__.py:235: UserWarning: 
+NVIDIA GeForce RTX 5090 with CUDA capability sm_120 is not compatible with the current PyTorch installation.
+The current PyTorch install supports CUDA capabilities sm_50 sm_60 sm_61 sm_70 sm_75 sm_80 sm_86 sm_90.
+If you want to use the NVIDIA GeForce RTX 5090 GPU with PyTorch, please check the instructions at https://pytorch.org/get-started/locally/
+
+  warnings.warn(
+torch= 2.6.0+cu124
+torch.version.cuda= 12.4
+is_available= True
+CUDA_VISIBLE_DEVICES= None
+device= NVIDIA GeForce RTX 5090

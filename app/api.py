@@ -94,33 +94,44 @@ async def startup_event():
     # 强制使用真实数据模式
     use_mock = False  # 强制关闭模拟模式
 
-    # GPU检测和配置
+    # 设备选择：优先读取 DEVICE 环境变量（auto/cpu/cuda），auto 时按可用性选择
     import torch
-    # 默认按可用性选择
-    if torch.cuda.is_available():
-        gpu_name = torch.cuda.get_device_name(0)
-        gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
-        device = "cuda"
-        logger.info(f"检测到GPU: {gpu_name}")
-        logger.info(f"GPU内存: {gpu_memory:.1f} GB")
-        # 做一次极小的计算烟雾测试，避免 sm 架构不兼容导致运行时错误
+    prefer = os.getenv("DEVICE", "auto").lower()
+    device = "cpu"
+    if prefer == "cuda":
+        if torch.cuda.is_available():
+            device = "cuda"
+        else:
+            logger.warning("指定 DEVICE=cuda 但 CUDA 不可用，回退到 CPU")
+    elif prefer == "cpu":
+        device = "cpu"
+    else:
+        # auto 模式
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # 如选择为 CUDA，做一次极小计算烟雾测试，避免不兼容架构导致运行时错误
+    if device == "cuda":
         try:
+            gpu_name = torch.cuda.get_device_name(0)
+            gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1024**3
+            logger.info(f"检测到GPU: {gpu_name}")
+            logger.info(f"GPU内存: {gpu_memory:.1f} GB")
             torch.zeros((1, 1), device="cuda").matmul(torch.ones((1, 1), device="cuda"))
             logger.info("GPU烟雾测试通过，使用GPU运行")
         except Exception as e:
             logger.warning(f"GPU烟雾测试失败，回退到CPU: {e}")
             device = "cpu"
     else:
-        device = "cpu"
-        logger.info("未检测到GPU，使用CPU")
-
-    # 允许环境变量覆盖
-    device = os.getenv("DEVICE", device)
+        logger.info("未选择或未检测到GPU，使用CPU")
 
     # CPU优化配置
     if device == "cpu":
-        torch.set_num_threads(8)  # 使用8个CPU线程
-        logger.info("🚀 CPU优化：使用8线程并行计算")
+        try:
+            cpu_threads = int(os.getenv('CPU_THREADS', max(1, (os.cpu_count() or 4) // 2)))
+            torch.set_num_threads(cpu_threads)
+            logger.info(f"🚀 CPU优化：使用{cpu_threads}线程并行计算")
+        except Exception as e:
+            logger.warning(f"设置CPU线程失败: {e}")
 
     try:
         prediction_service = get_prediction_service(device=device, use_mock=use_mock)
