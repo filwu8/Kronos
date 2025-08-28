@@ -323,22 +323,35 @@ class StockPredictionService:
                             pass
                         logger.info(f"使用本地缓存数据: {stock_code}, {len(df)} 条记录")
 
-            # 1) 若缓存不可用，使用在线数据源（akshare->yfinance）
+            # 1) 条件性优先使用 Qlib（有限使用）：当请求的历史窗口较大时优先Qlib，否则走在线数据
+            #    - 阀值可通过环境变量 QLIB_LOOKBACK_THRESHOLD 配置，默认 1200（~5年交易日）
+            qlib_threshold = int(os.getenv('QLIB_LOOKBACK_THRESHOLD', '1200'))
+            prefer_qlib = (self.has_qlib and not self.use_mock and (lookback >= qlib_threshold or period in ('2y', '5y')))
+
+            if df is None or len(df) < lookback:
+                if prefer_qlib:
+                    try:
+                        symbol = f"{stock_code}.SZ" if stock_code.startswith(('00','30')) else (f"{stock_code}.SS" if stock_code.startswith('60') else stock_code)
+                        qlib_df = self.qlib_adapter.get_stock_df(symbol, lookback=lookback, predict_window=pred_len)
+                        if qlib_df is not None and not qlib_df.empty:
+                            df = qlib_df
+                            logger.info(f"使用Qlib数据: {symbol}, {len(df)} 条记录 (有限使用)")
+                    except Exception:
+                        pass
+
+            # 2) 若仍无数据或不足，使用在线数据源（akshare->yfinance）
             if (df is None or df.empty):
                 logger.info(f"使用在线数据源获取 {stock_code} ({period})")
                 df = self.data_fetcher.fetch_stock_data(stock_code, period=period)
                 stock_info = stock_info or self.data_fetcher.get_stock_info(stock_code)
-
-            # 2) 最后才尝试 Qlib（若可用）
-            if (df is None or df.empty) and self.has_qlib and not self.use_mock:
+                # 若本次需要较长历史而 Qlib 不可用/暂无数据，则自动导出 CSV 供后续导入 Qlib
                 try:
-                    symbol = f"{stock_code}.SZ" if stock_code.startswith(('00','30')) else (f"{stock_code}.SS" if stock_code.startswith('60') else stock_code)
-                    qlib_df = self.qlib_adapter.get_stock_df(symbol, lookback=lookback, predict_window=pred_len)
-                    if qlib_df is not None and not qlib_df.empty:
-                        df = qlib_df
-                        logger.info(f"使用Qlib数据: {symbol}, {len(df)} 条记录")
-                except Exception:
-                    pass
+                    if prefer_qlib and self.qlib_adapter and df is not None and len(df) > 0:
+                        symbol = self.qlib_adapter.code_to_symbol(stock_code)
+                        export_path = self.qlib_adapter.export_symbol_csv_for_import(symbol, df)
+                        logger.info(f"已为 {symbol} 导出 Qlib 导入用CSV: {export_path}")
+                except Exception as e:
+                    logger.warning(f"导出 Qlib 导入CSV失败: {e}")
 
             # 3) 若仍失败，返回可用列表提示
             if df is None or df.empty:
@@ -541,7 +554,7 @@ class StockPredictionService:
                 'error': None,
                 'data': {
                     'stock_info': stock_info,
-                    'historical_data': self._format_historical_data(df),
+                    'historical_data': self._format_historical_data(df.tail(min(lookback, len(df)))),
                     'predictions': self._format_predictions(pred_df, y_timestamp, uncertainty_data),
                     'summary': {
                         'current_price': float(last_close),
