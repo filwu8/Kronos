@@ -101,6 +101,12 @@ a[href*="streamlit.io"] {
     opacity: 0.9;
     margin-top: 5px;
 }
+/* 进一步收敛主区顶部留白：移除前置容器的上边距与内边距 */
+.main .block-container .element-container { margin-top: 0 !important; }
+/* 前两个容器多为样式/脚本或占位，统一清零其上内边距 */
+.main .block-container .element-container:first-of-type,
+.main .block-container .element-container:nth-of-type(2) { padding-top: 0 !important; margin-top: 0 !important; }
+
 
 /* 确保主内容区域不被遮挡（统一更小的顶部留白） */
 .main .block-container {

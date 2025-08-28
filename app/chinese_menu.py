@@ -8,7 +8,7 @@ from typing import Dict, List, Optional
 
 class ChineseMenu:
     """中文化菜单管理器"""
-    
+
     def __init__(self):
         self.pages = {
             "stock_prediction": {
@@ -17,13 +17,13 @@ class ChineseMenu:
                 "description": "智能股票价格预测分析"
             },
             "data_analysis": {
-                "title": "📊 数据分析", 
+                "title": "📊 数据分析",
                 "icon": "📊",
                 "description": "历史数据深度分析"
             },
             "portfolio_management": {
                 "title": "💼 投资组合",
-                "icon": "💼", 
+                "icon": "💼",
                 "description": "投资组合管理工具"
             },
             "risk_assessment": {
@@ -52,7 +52,7 @@ class ChineseMenu:
                 "description": "系统信息和版本说明"
             }
         }
-        
+
         # 菜单分组
         self.menu_groups = {
             "核心功能": ["stock_prediction", "data_analysis"],
@@ -60,106 +60,95 @@ class ChineseMenu:
             "市场信息": ["market_overview"],
             "系统管理": ["settings", "help", "about"]
         }
-    
+
     def render_sidebar_menu(self) -> str:
         """渲染侧边栏菜单"""
         st.sidebar.markdown("## 🚀 Gordon Wang 股票预测系统")
         st.sidebar.markdown("---")
-        
+
         # 当前页面状态
         if 'current_page' not in st.session_state:
             st.session_state.current_page = 'stock_prediction'
-        
+
         selected_page = st.session_state.current_page
-        
+
         # 渲染分组菜单
         for group_name, page_ids in self.menu_groups.items():
             st.sidebar.markdown(f"### {group_name}")
-            
+
             for page_id in page_ids:
                 page_info = self.pages[page_id]
-                
+
                 # 创建按钮
                 if st.sidebar.button(
-                    f"{page_info['icon']} {page_info['title']}", 
+                    f"{page_info['icon']} {page_info['title']}",
                     key=f"menu_{page_id}",
                     help=page_info['description'],
                     use_container_width=True
                 ):
                     st.session_state.current_page = page_id
                     st.rerun()
-            
+
             st.sidebar.markdown("---")
-        
+
         return st.session_state.current_page
-    
+
     def render_top_navigation(self) -> str:
         """渲染顶部导航栏"""
         # 创建导航栏
         nav_cols = st.columns(len(self.pages))
-        
+
         if 'current_page' not in st.session_state:
             st.session_state.current_page = 'stock_prediction'
-        
+
         for i, (page_id, page_info) in enumerate(self.pages.items()):
             with nav_cols[i]:
                 if st.button(
-                    f"{page_info['icon']} {page_info['title']}", 
+                    f"{page_info['icon']} {page_info['title']}",
                     key=f"nav_{page_id}",
                     help=page_info['description']
                 ):
                     st.session_state.current_page = page_id
                     st.rerun()
-        
+
         return st.session_state.current_page
-    
+
     def render_breadcrumb(self, current_page: str) -> None:
         """渲染面包屑导航"""
         if current_page in self.pages:
             page_info = self.pages[current_page]
-            
+
             # 找到当前页面所属的分组
             current_group = None
             for group_name, page_ids in self.menu_groups.items():
                 if current_page in page_ids:
                     current_group = group_name
                     break
-            
+
             # 显示面包屑
             breadcrumb = f"🏠 首页 > {current_group} > {page_info['title']}"
             st.markdown(f"**导航路径**: {breadcrumb}")
-    
+
     def get_page_title(self, page_id: str) -> str:
         """获取页面标题"""
         if page_id in self.pages:
             return self.pages[page_id]['title']
         return "未知页面"
-    
+
     def get_page_description(self, page_id: str) -> str:
         """获取页面描述"""
         if page_id in self.pages:
             return self.pages[page_id]['description']
         return ""
 
-def render_chinese_header():
-    """渲染中文化页面头部"""
-    st.markdown("""
-    <div style="background: linear-gradient(90deg, #1f77b4, #2e8b57); padding: 20px; border-radius: 10px; margin-bottom: 20px;">
-        <h1 style="color: white; text-align: center; margin: 0;">
-            🚀 Gordon Wang 的股票预测系统
-        </h1>
-        <p style="color: white; text-align: center; margin: 10px 0 0 0; opacity: 0.9;">
-            基于RTX 5090 GPU加速的智能股票预测平台
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
+# 旧的头部渲染已由 streamlit_app 的 title-banner 替代
 
 def render_chinese_footer():
     """渲染中文化页面底部"""
     st.markdown("---")
-    
+
     col1, col2, col3 = st.columns(3)
-    
+
     with col1:
         st.markdown("""
         **🔧 技术栈**
@@ -168,7 +157,7 @@ def render_chinese_footer():
         - RTX 5090 GPU加速
         - Kronos-small 模型
         """)
-    
+
     with col2:
         st.markdown("""
         **📊 功能特色**
@@ -177,7 +166,7 @@ def render_chinese_footer():
         - 实时数据分析
         - 高性能计算
         """)
-    
+
     with col3:
         st.markdown("""
         **📞 联系信息**
@@ -185,7 +174,7 @@ def render_chinese_footer():
         - 版本: v1.0.0
         - 更新: 2025-08-26
         """)
-    
+
     st.markdown("""
     <div style="text-align: center; padding: 20px; color: #666;">
         <p>© 2025 Gordon Wang 股票预测系统. 保留所有权利.</p>
@@ -194,20 +183,125 @@ def render_chinese_footer():
     """, unsafe_allow_html=True)
 
 def create_chinese_sidebar():
-    """创建完全中文化的侧边栏"""
-    st.sidebar.markdown("""
+    """创建完全中文化的侧边栏（紧凑样式 + 徽章定位 + 清理冗余）"""
+    # 样式：压缩侧边栏间距、统一按钮尺寸、紧凑分隔线
+    st.sidebar.markdown(
+        """
     <style>
-      .sys-menu-badge {
-        display: inline-flex; align-items:center; justify-content:center;
-        padding: 4px 10px; border-radius: 14px;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: #fff; font-size: 13px; font-weight: 600; letter-spacing: 0.5px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-        white-space: nowrap; user-select: none;
+      /* 顶部覆盖层：将“系统菜单”与X平行并保持中线居中 */
+      [data-testid="stSidebar"] { position: relative; }
+      #sys-menu-overlay {
+        position: absolute; top: 0; left: 0; width: 100%; height: 28px;
+        display: flex; align-items: center; justify-content: center;
+        pointer-events: none; z-index: 10;
       }
+
+      /* 顶部“系统菜单”样式：与X平行左侧、但标题整体居中（使用绝对定位覆盖） */
+      /* 系统菜单标题基础样式（尺寸更大，行内紧凑） */
+      .sys-menu-badge {
+        display: inline-flex; align-items: center; justify-content: center;
+        margin: 0; padding: 0;
+        background: transparent !important; border-radius: 0;
+        color: inherit; font-size: 32px; font-weight: 800; letter-spacing: 0.2px; line-height: 1.2;
+      }
+
+      /* 侧边栏整体更紧凑 */
+      [data-testid="stSidebar"] * { box-sizing: border-box; }
+      [data-testid="stSidebar"] hr { margin: 6px 0; opacity: .6; }
+      [data-testid="stSidebar"] h1,
+      [data-testid="stSidebar"] h2,
+      [data-testid="stSidebar"] h3 { margin: 6px 0 4px; line-height: 1.2; }
+      /* 统一二级标题字号：略小于“系统菜单”，又比正文略大 */
+      [data-testid="stSidebar"] h2,
+      [data-testid="stSidebar"] h3 { font-size: 15px; font-weight: 700; }
+      [data-testid="stSidebar"] p { margin: 2px 0 6px; }
+      [data-testid="stSidebar"] [data-testid="column"] { padding: 0 4px; }
+
+      /* 压缩侧栏顶部头部按钮区域，避免徽章上方出现大空白 */
+      [data-testid="stSidebar"] [data-testid="baseButton-header"] {
+        padding: 0 4px !important; margin: 0 !important;
+        min-height: 24px !important; height: 24px !important;
+      }
+      [data-testid="stSidebar"] [data-testid="stSidebarContent"] { padding-top: 0 !important; margin-top: 0 !important; }
+      [data-testid="stSidebar"] [data-testid="stSidebarContent"] > div:first-child { margin-top: 0 !important; padding-top: 0 !important; }
+      [data-testid="stSidebar"] [data-testid="stSidebarContent"] h1:first-of-type,
+      [data-testid="stSidebar"] [data-testid="stSidebarContent"] h2:first-of-type,
+      [data-testid="stSidebar"] [data-testid="stSidebarContent"] h3:first-of-type { margin-top: 0 !important; }
+
+      /* 将头部下方紧贴到 X 下一行：收紧第一个分隔符/容器的上边距 */
+      [data-testid="stSidebar"] [data-testid="stSidebarContent"] > :is(div, section, hr):first-child { margin-top: 0 !important; }
+
+      /* 关闭按钮尺寸更小，减少头部占位 */
+      [data-testid="stSidebar"] button[kind="headerClose"]{
+        width: 22px; height: 22px; min-height: 22px;
+        padding: 0 !important; margin: 0 !important;
+      }
+
+      /* 按钮更紧凑（主/次） */
+      [data-testid="stSidebar"] div[data-testid="baseButton-secondary"] button,
+      [data-testid="stSidebar"] div[data-testid="baseButton-primary"] button {
+        padding: 6px 8px !important; min-height: 28px !important;
+        font-size: 13px !important; line-height: 1.1 !important;
+      }
+      [data-testid="stSidebar"] div[data-testid^="baseButton-"] { margin-bottom: 6px; }
+
+      /* 指标块更紧凑 */
+      [data-testid="stSidebar"] [data-testid="stMetricValue"] { font-size: 14px; }
+      [data-testid="stSidebar"] [data-testid="stMetricDelta"] { font-size: 11px; }
+      [data-testid="stSidebar"] [data-testid="stMetricLabel"] { font-size: 11px; margin-bottom: 0; }
     </style>
-    <div id="system-menu-banner" class="sys-menu-badge" title="系统菜单">🚀 系统菜单</div>
-    """, unsafe_allow_html=True)
+    <div id="sys-menu-overlay"><div id="system-menu-banner" class="sys-menu-badge" title="系统菜单">🚀 系统菜单</div></div>
+    """,
+        unsafe_allow_html=True,
+    )
+
+    # 脚本：将徽章靠近侧边栏关闭按钮，并清理空白按钮容器（集中于此，移除页面内重复脚本）
+    try:
+        import streamlit.components.v1 as components
+        with st.sidebar:
+            components.html(
+                """
+                <script>
+                (function(){
+                  let tries = 0;
+                  function tick(){
+                    try{
+                      const doc = parent.document;
+                      const sidebar = doc.querySelector('[data-testid="stSidebar"]');
+                      const overlay = doc.querySelector('#sys-menu-overlay');
+                      const badge = doc.querySelector('#system-menu-banner');
+                      if(sidebar && overlay && badge){
+                        if (badge.parentElement !== overlay){ overlay.appendChild(badge); }
+                        // 调整蓝色主体距顶部的间距：仅保留约1个字高
+                        try{
+                          const content = sidebar.querySelector('[data-testid="stSidebarContent"]');
+                          const headerBtn = sidebar.querySelector('[data-testid="baseButton-header"]');
+                          const headerBottom = headerBtn ? headerBtn.getBoundingClientRect().bottom : sidebar.getBoundingClientRect().top;
+                          const firstBlock = content && content.firstElementChild;
+                          if(firstBlock){
+                            const fs = parseFloat(getComputedStyle(firstBlock).fontSize) || 16; // 1em
+                            const desired = fs; // 视觉上一行字高
+                            const firstTop = firstBlock.getBoundingClientRect().top;
+                            const gap = firstTop - headerBottom;
+                            const diff = gap - desired;
+                            if (diff > 1) {
+                              firstBlock.style.marginTop = (-diff) + 'px';
+                            }
+                          }
+                        }catch(e){}
+                        return;
+                      }
+                    }catch(e){}
+                    if(++tries < 20) setTimeout(tick, 200);
+                  }
+                  tick();
+                })();
+                </script>
+                """,
+                height=0,
+            )
+    except Exception:
+        pass
 
 def create_sidebar_status_section():
     """创建侧边栏状态部分（在示例股票后面显示）"""
@@ -319,12 +413,26 @@ def create_sidebar_status_section():
 if __name__ == "__main__":
     # 测试中文菜单
     menu = ChineseMenu()
-    render_chinese_header()
-    
+    # 头部由主应用渲染的 title-banner 负责
+
     current_page = menu.render_sidebar_menu()
     menu.render_breadcrumb(current_page)
-    
+
     st.write(f"当前页面: {menu.get_page_title(current_page)}")
     st.write(f"页面描述: {menu.get_page_description(current_page)}")
-    
+
     render_chinese_footer()
+
+    # 新增：蒙特卡洛预测说明（放在“🚀 性能监控”后面，左侧同级菜单块）
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📊 蒙特卡洛预测说明")
+    st.sidebar.markdown(
+        """
+        - 红色实线: 30次蒙特卡洛模拟的平均预测价格
+        - 红色阴影区域: 25%-75%分位数区间（50%概率范围）
+        - 蓝色实线: 历史真实价格数据
+        - 预测方法: Kronos-small模型 + 30条独立预测路径
+        - 不确定性: 阴影区域越宽表示预测分歧越大
+        """
+    )
+

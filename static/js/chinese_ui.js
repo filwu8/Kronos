@@ -198,87 +198,42 @@ function translatePage() {
 
 // 完全移除Streamlit广告元素
 function hideStreamlitElements() {
-    // 隐藏Deploy按钮
-    const deployButtons = document.querySelectorAll('[data-testid="stAppDeployButton"]');
-    deployButtons.forEach(btn => {
-        btn.style.display = 'none';
-        btn.remove();
-    });
+    const docs = [document];
+    try { if (parent && parent.document) docs.push(parent.document); } catch(e) {}
 
-    // 隐藏右上角菜单
-    const topMenus = document.querySelectorAll('.css-1rs6os, .css-17eq0hr, .css-1kyxreq, .css-1v0mbdj');
-    topMenus.forEach(menu => {
-        menu.style.display = 'none';
-        menu.remove();
+    // 隐藏Deploy按钮 / 右上角菜单 / 主菜单 / 品牌链接
+    docs.forEach(doc => {
+        doc.querySelectorAll('[data-testid="stAppDeployButton"]').forEach(btn => { btn.style.display='none'; try{btn.remove();}catch(_){} });
+        doc.querySelectorAll('.css-1rs6os, .css-17eq0hr, .css-1kyxreq, .css-1v0mbdj').forEach(menu => { menu.style.display='none'; try{menu.remove();}catch(_){} });
+        doc.querySelectorAll('a[href*="streamlit.io"]').forEach(link => { link.style.display='none'; try{link.remove();}catch(_){} });
+        const mainMenu = doc.querySelector('#MainMenu'); if (mainMenu) { mainMenu.style.display='none'; try{mainMenu.remove();}catch(_){} }
     });
-
-    // 隐藏"Made with Streamlit"
-    const streamlitLinks = document.querySelectorAll('a[href*="streamlit.io"]');
-    streamlitLinks.forEach(link => {
-        link.style.display = 'none';
-        link.remove();
-    });
-
-    // 隐藏主菜单
-    const mainMenu = document.querySelector('#MainMenu');
-    if (mainMenu) {
-        mainMenu.style.display = 'none';
-        mainMenu.remove();
-    }
 
     // 隐藏页脚
-    const footers = document.querySelectorAll('footer');
-    footers.forEach(footer => {
-        footer.style.display = 'none';
-        footer.remove();
+    docs.forEach(doc => {
+        doc.querySelectorAll('footer').forEach(footer => { footer.style.display='none'; try{footer.remove();}catch(_){} });
     });
 
     // 隐藏顶部工具栏
-    const toolbars = document.querySelectorAll('.css-18e3th9');
-    toolbars.forEach(toolbar => {
-        toolbar.style.display = 'none';
+    docs.forEach(doc => {
+        doc.querySelectorAll('.css-18e3th9').forEach(toolbar => { toolbar.style.display='none'; });
     });
 
     // 强制隐藏系统 Header 占位
-    const headerEl = document.querySelector('[data-testid="stHeader"]');
-    if (headerEl) {
-        headerEl.style.setProperty('display', 'none', 'important');
-        headerEl.style.minHeight = '0px';
-        headerEl.style.height = '0px';
-        headerEl.style.padding = '0px';
-        headerEl.style.margin = '0px';
-        headerEl.style.overflow = 'hidden';
-    }
-
-    // 移除所有Streamlit品牌元素
-    const brandElements = document.querySelectorAll('.css-1dp5vir, .css-hi6a2p');
-    brandElements.forEach(element => {
-        element.style.display = 'none';
-        element.remove();
+    docs.forEach(doc => {
+        const headerEl = doc.querySelector('[data-testid="stHeader"]');
+        if (headerEl) {
+            headerEl.style.setProperty('display', 'none', 'important');
+            headerEl.style.minHeight = '0px';
+            headerEl.style.height = '0px';
+            headerEl.style.padding = '0px';
+            headerEl.style.margin = '0px';
+            headerEl.style.overflow = 'hidden';
+        }
     });
-
-    // console.log('🚫 已移除Streamlit广告元素');
 }
 
-// 添加自定义导航栏
-function addCustomNavbar() {
-    if (document.getElementById('custom-navbar')) return; // 防重复插入
-    const navbar = document.createElement('div');
-    navbar.id = 'custom-navbar';
-    navbar.className = 'custom-navbar';
-    navbar.innerHTML = `
-        <h1>🚀 Gordon Wang 的股票预测系统</h1>
-        <p style="margin: 5px 0 0 0; text-align: center; font-size: 14px; opacity: 0.9;">
-            基于RTX 5090 GPU加速的智能股票预测平台
-        </p>
-    `;
-
-    // 插入到页面顶部
-    const mainContainer = document.querySelector('.main');
-    if (mainContainer) {
-        mainContainer.insertBefore(navbar, mainContainer.firstChild);
-    }
-}
+// 自定义导航栏功能已停用，移除冗余代码
 
 // 添加加载动画
 function showLoading(message = '加载中...') {
@@ -321,37 +276,39 @@ function showMessage(message, type = 'info') {
 
 // 主初始化函数
 function tightenTopWhitespace() {
-    // 仅收敛主区第一个 stVerticalBlock 内部：在“标题容器”之前隐藏所有容器
-    const root = document.querySelector('[data-testid="stAppViewContainer"]') || document.body;
-    const firstBlock = [...root.querySelectorAll('[data-testid="stVerticalBlock"]')]
-        .find(el => !el.closest('[data-testid="stSidebar"]') && !el.closest('[data-testid="stSidebarUserContent"]'));
-    if (!firstBlock) return;
-    const containers = [...firstBlock.querySelectorAll('[data-testid="stElementContainer"]')];
+    const docs = [document];
+    try { if (parent && parent.document) docs.push(parent.document); } catch(e) {}
 
-    // 用更稳健的方式定位标题容器：优先查找 .main-header，其次匹配中文/英文标题文本
-    const isTitleContainer = (ec) => {
-        if (ec.querySelector('.main-header')) return true;
-        const t = (ec.innerText || '').trim();
-        return /🚀\s*Gordon\s+Wang|股票预测系统|RTX\s*5090/.test(t);
+    docs.forEach(doc => {
+        const main = doc.querySelector('.main .block-container');
+        if (!main) return;
+        const containers = Array.from(main.querySelectorAll('.element-container'));
+        if (!containers.length) return;
 
-    };
+        let hitTitle = false;
+        for (const ec of containers) {
+            if (hitTitle) break;
+            const hasTitle = ec.querySelector('.title-banner') || ec.querySelector('.main-header') || /Gordon\s+Wang|股票预测系统|RTX\s*5090/.test((ec.innerText || '').trim());
+            if (hasTitle) { hitTitle = true; continue; }
 
-
-
-
-    const titleIdx = containers.findIndex(isTitleContainer);
-    if (titleIdx > 0) {
-        for (let i = 0; i < titleIdx; i++) {
-            const ec = containers[i];
-            ec.style.display = 'none';
-            ec.setAttribute('data-collapsed', 'true');
+            const fc = ec.firstElementChild;
+            const tag = fc ? fc.tagName.toLowerCase() : '';
+            const cls = fc ? (fc.className || '') : '';
+            const html = (ec.innerHTML || '').trim();
+            const htmlWithoutStyleScript = html.replace(/<\/(?:style|script)>[\s\S]*?<(?=style|script)|<(?:style|script)[\s\S]*?<\/(?:style|script)>/gi, '').trim();
+            const isStyleOnly = tag === 'div' && cls.includes('stMarkdown') && htmlWithoutStyleScript === '';
+            const isIframe = tag === 'iframe';
+            if (isStyleOnly || isIframe) {
+                ec.style.display = 'none';
+                ec.setAttribute('data-collapsed', 'true');
+            }
         }
-    }
+    });
 }
 
 
 function pinTitleBanner() {
-    // AGGRESSIVE TOP SPACING REMOVAL
+    // 移除Streamlit默认头部和过大的顶部留白
     function removeTopSpacing() {
         // Remove all headers
         const headers = document.querySelectorAll('[data-testid="stHeader"], .stApp > header, header');
@@ -362,11 +319,11 @@ function pinTitleBanner() {
             header.style.setProperty('padding', '0', 'important');
         });
 
-        // Remove top spacing from all main containers
+        // 清除根容器的 margin-top，并让 CSS 控制统一的 0.25rem 顶部留白
         const containers = document.querySelectorAll('.stApp, [data-testid="stAppViewContainer"], .main, .main > div, .block-container, .main .block-container, [data-testid="block-container"]');
         containers.forEach(container => {
             container.style.setProperty('margin-top', '0', 'important');
-            container.style.setProperty('padding-top', '0', 'important');
+            container.style.removeProperty('padding-top');
         });
 
         // Force body and html to have no top spacing
@@ -376,48 +333,22 @@ function pinTitleBanner() {
         document.documentElement.style.setProperty('padding-top', '0', 'important');
     }
 
-    function ensurePortal() {
-        let portal = document.getElementById('title-banner-portal');
-        if (!portal) {
-            portal = document.createElement('div');
-            portal.id = 'title-banner-portal';
-            Object.assign(portal.style, {
-                position: 'fixed', top: '0px', left: '0', right: '0', zIndex: '1100'
-            });
-            document.body.appendChild(portal);
-        }
-        return portal;
-    }
-
     function apply() {
         // Always remove top spacing first
         removeTopSpacing();
+        // Also tighten containers before the title if present
+        try { tightenTopWhitespace(); } catch(e) {}
 
         const banner = document.querySelector('.title-banner');
         // 标题可能尚未渲染，等待后续MutationObserver回调
         if (!banner) return;
 
-        // 将横幅挂到 body 顶层门户，避免父级 transform 影响
-        const portal = ensurePortal();
-        if (banner.parentNode !== portal) {
-            portal.appendChild(banner);
-            banner.style.position = 'relative';
-            banner.style.top = '0px';
-            banner.style.left = '0';
-            banner.style.right = '0';
-            banner.style.margin = '0';
-        }
+        // 确保横幅保持在文档正常流中（使用CSS的sticky），并清理之前的内联定位
+        ['position','top','left','right','margin'].forEach(p => banner.style.removeProperty(p));
 
-        // 记录横幅高度，供主容器预留占位
-        const h = Math.ceil(banner.getBoundingClientRect().height);
+        // 清理旧版变量，避免产生额外占位
         document.documentElement.style.setProperty('--title-banner-offset', '0px');
-        document.documentElement.style.setProperty('--title-banner-h', h + 'px');
-
-        // 将根滚动容器的 padding-top 设为横幅高度，避免横幅覆盖内容
-        const mainContainer = document.querySelector('.main .block-container');
-        if (mainContainer) {
-            mainContainer.style.paddingTop = `0px`; // Force zero padding
-        }
+        document.documentElement.style.setProperty('--title-banner-h', '0px');
     }
 
     // 初次与后续响应

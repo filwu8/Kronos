@@ -189,9 +189,9 @@
     pointer-events: none !important;
 }
 
-/* 横幅固定后为主内容预留等高占位，避免遮挡 */
+/* 统一顶部留白，消除初始多余空白（与 JS 固定横幅逻辑配合） */
 .main .block-container {
-    padding-top: calc(var(--title-banner-h, 0px) + 0.25rem) !important;
+    padding-top: 0.25rem !important;
 }
 
 @keyframes sweep {

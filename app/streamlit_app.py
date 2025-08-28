@@ -16,7 +16,7 @@ from pathlib import Path
 # 导入静态资源管理器和中文菜单
 try:
     from static_manager import StaticResourceManager
-    from chinese_menu import ChineseMenu, render_chinese_header, render_chinese_footer, create_chinese_sidebar, create_sidebar_status_section
+    from chinese_menu import ChineseMenu, create_chinese_sidebar, create_sidebar_status_section
 except ImportError:
     StaticResourceManager = None
     ChineseMenu = None
@@ -78,8 +78,9 @@ def load_local_resources():
     bundle_html = f"<style>{aggressive_css}{''.join(css_bundle)}</style>\n<script>{''.join(js_bundle)}</script>"
     st.markdown(bundle_html, unsafe_allow_html=True)
 
-# 加载本地资源
+# 加载本地资源（注入 CSS/JS bundle）
 load_local_resources()
+
 
 
 # 读取根目录 logo.png 并返回 data URI，避免静态路径加载失败
@@ -550,27 +551,21 @@ def render_stock_prediction_content():
     """渲染股票预测内容"""
     # 标题（主副标题作为一个视觉整体且统一居中）
     logo_uri = get_logo_data_uri()
-    if logo_uri:
-        # 根据动画状态决定标题类名
-        animation_state = st.session_state.get('title_animation_state', 'idle')
-        title_html = (
+    SUBTITLE_TEXT = "基于RTX 5090 GPU加速的智能股票预测平台"
+    def build_title_html(animation_state: str, logo_data_uri: str | None) -> str:
+        logo_html = f'<img class="title-logo" src="{logo_data_uri}" alt="Logo">' if logo_data_uri else ''
+        return (
             '<div class="title-banner">'
             f'<h1 id="main-title" class="main-header gradient-title glow {animation_state}" data-state="{animation_state}">'
-            f'<img class="title-logo" src="{logo_uri}" alt="Logo">'
+            f'{logo_html}'
             'Gordon Wang 的股票预测系统'
             '</h1>'
-            '<p class="main-subtitle">基于RTX 5090 GPU加速的智能股票预测平台</p>'
+            f'<p class="main-subtitle">{SUBTITLE_TEXT}</p>'
             '</div>'
         )
-    else:
-        # 根据动画状态决定标题类名
-        animation_state = st.session_state.get('title_animation_state', 'idle')
-        title_html = (
-            '<div class="title-banner">'
-            f'<h1 id="main-title" class="main-header gradient-title glow {animation_state}" data-state="{animation_state}">Gordon Wang 的股票预测系统</h1>'
-            '<p class="main-subtitle">基于RTX 5090 GPU加速的智能股票预测平台</p>'
-            '</div>'
-        )
+
+    animation_state = st.session_state.get('title_animation_state', 'idle')
+    title_html = build_title_html(animation_state, logo_uri)
     title_slot = st.empty()
     # 健康指示器占位
     status_slot = st.empty()
@@ -660,69 +655,7 @@ def render_stock_prediction_content():
         except Exception as e:
             st.error(f"价格走势图渲染失败: {e}")
 
-    # 清理侧边栏中可能残留的空白按钮（仅影响无文本按钮）
-    try:
-        import streamlit.components.v1 as components
-        # 将“系统菜单”小徽章移动到侧边栏顶部 X 按钮左侧
-        try:
-            import streamlit.components.v1 as components
-            components.html(
-                """
-                <script>
-                (function(){
-                  try{
-                    var doc = parent.document;
-                    var badge = doc.querySelector('#system-menu-banner');
-                    var sidebar = doc.querySelector('[data-testid="stSidebar"]');
-                    var closeBtn = sidebar ? sidebar.querySelector('button[kind="headerClose"]') : null;
-                    if(badge && closeBtn && closeBtn.parentElement){
-                      closeBtn.parentElement.style.display = 'flex';
-                      closeBtn.parentElement.style.alignItems = 'center';
-                      closeBtn.parentElement.style.gap = '8px';
-                      closeBtn.parentElement.insertBefore(badge, closeBtn);
-                      var header = closeBtn.parentElement;
-                      if (header) {
-                        header.style.paddingTop = '4px';
-                        header.style.marginTop = '0';
-                        header.style.minHeight = 'auto';
-                      }
-                      var headerWrap = header && header.parentElement ? header.parentElement : null;
-                      if (headerWrap) {
-                        headerWrap.style.paddingTop = '4px';
-                        headerWrap.style.marginTop = '0';
-                      }
-                    }
-                  }catch(e){}
-                })();
-                </script>
-                """,
-                height=0
-            )
-        except Exception:
-            pass
-        components.html(
-            """
-            <script>
-            (function(){
-              function cleanup(){
-                try{
-                  var doc = parent.document;
-                  var sidebar = doc.querySelector('[data-testid="stSidebar"]') || doc;
-                  var btnWraps = sidebar.querySelectorAll('div[data-testid="baseButton-secondary"]');
-                  btnWraps.forEach(function(w){
-                    var txt = (w.innerText||'').trim();
-                    if(txt === '' || txt === '\u200b') { w.style.display='none'; }
-                  });
-                }catch(e){}
-              }
-              cleanup(); setTimeout(cleanup, 300); setTimeout(cleanup, 1000);
-            })();
-            </script>
-            """,
-            height=0
-        )
-    except Exception:
-        pass
+    # 侧边栏紧凑与徽章定位已在 create_chinese_sidebar() 统一处理，避免重复脚本
 
     # 刷新该股票数据（刷新成功后自动触发预测）
     if st.sidebar.button("🔄 刷新该股票数据", type="secondary", use_container_width=True):
@@ -761,16 +694,7 @@ def render_stock_prediction_content():
         # 立即重绘标题占位，确保动画启动
         animation_state = st.session_state.get('title_animation_state', 'idle')
         _logo_uri = get_logo_data_uri()
-        _logo_html = f'<img class="title-logo" src="{_logo_uri}" alt="Logo">' if _logo_uri else ''
-        live_title_html = (
-            '<div class="title-banner">'
-            f'<h1 id="main-title" class="main-header gradient-title glow {animation_state}" data-state="{animation_state}">'
-            f'{_logo_html}'
-            'Gordon Wang 的股票预测系统'
-            '</h1>'
-            '<p class="main-subtitle">基于RTX 5090 GPU加速的智能股票预测平台</p>'
-            '</div>'
-        )
+        live_title_html = build_title_html(animation_state, _logo_uri)
         # 先绘制标题，再用脚本强制重启动画，确保元素已存在
         title_slot.markdown(live_title_html, unsafe_allow_html=True)
         try:
@@ -1088,16 +1012,7 @@ def render_stock_prediction_content():
             st.session_state['title_animation_state'] = 'static'
             final_state2 = st.session_state.get('title_animation_state', 'static')
             _logo_uri = get_logo_data_uri()
-            _logo_html = f'<img class="title-logo" src="{_logo_uri}" alt="Logo">' if _logo_uri else ''
-            final_title_html2 = (
-                '<div class="title-banner">'
-                f'<h1 id="main-title" class="main-header gradient-title glow {final_state2}" data-state="{final_state2}">'
-                f'{_logo_html}'
-                'Gordon Wang 的股票预测系统'
-                '</h1>'
-                '<p class="main-subtitle">基于RTX 5090 GPU加速的智能股票预测平台</p>'
-                '</div>'
-            )
+            final_title_html2 = build_title_html(final_state2, _logo_uri)
             title_slot.markdown(final_title_html2, unsafe_allow_html=True)
 
         else:
