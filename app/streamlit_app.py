@@ -536,15 +536,26 @@ def main():
         if 'current_page' not in st.session_state:
             st.session_state.current_page = 'stock_prediction'
 
+        # 增加一个“方向回测”菜单项（中文）
+        try:
+            backtest_item = {
+                'id': 'backtest_direction',
+                'title': '🧪 方向回测（滚动）'
+            }
+            if hasattr(menu, 'add_custom_page'):
+                menu.add_custom_page(backtest_item)
+        except Exception:
+            pass
+
         # 根据选择的页面渲染不同内容
         if st.session_state.current_page == 'stock_prediction':
             render_stock_prediction_content()
+        elif st.session_state.current_page == 'backtest_direction':
+            render_direction_backtest_page()
         else:
-            # 其他页面暂时显示开发中
             st.info(f"📝 {menu.get_page_title(st.session_state.current_page)} 功能开发中...")
             render_stock_prediction_content()  # 临时显示预测页面
     else:
-        # 备选方案：原始界面
         render_stock_prediction_content()
 
 def render_stock_prediction_content():
@@ -657,15 +668,15 @@ def render_stock_prediction_content():
 
     # 侧边栏紧凑与徽章定位已在 create_chinese_sidebar() 统一处理，避免重复脚本
 
-    # 刷新该股票数据（刷新成功后自动触发预测）
+    # 刷新该股票数据（支持指定 period；刷新成功后自动触发预测）
     if st.sidebar.button("🔄 刷新该股票数据", type="secondary", use_container_width=True):
         try:
             import requests, os
             api_base = os.getenv("API_BASE_URL", "http://localhost:8000")
-            r = requests.post(f"{api_base}/refresh/{stock_code}", timeout=30)
+            r = requests.post(f"{api_base}/refresh/{stock_code}", params={"period": period}, timeout=30)
             if r.status_code == 200 and r.json().get('success'):
                 info = r.json()['data']
-                st.sidebar.success(f"已更新: {info['last_date']} 来源: {info['source']}")
+                st.sidebar.success(f"已更新: {info['last_date']} 来源: {info['source']} 条数: {info.get('rows','-')}")
                 # 自动触发一次预测
                 st.session_state['auto_trigger_predict'] = True
                 st.experimental_rerun()
@@ -934,6 +945,13 @@ def render_stock_prediction_content():
                         # 按日期升序
                         hist_df['date'] = pd.to_datetime(hist_df['date'])
                         hist_df = hist_df.sort_values('date')
+
+                        # 范围摘要
+                        if len(hist_df) > 0:
+                            start_date = hist_df['date'].iloc[0].strftime('%Y-%m-%d')
+                            end_date = hist_df['date'].iloc[-1].strftime('%Y-%m-%d')
+                            st.caption(f"范围: {start_date} → {end_date}（共 {len(hist_df)} 条）")
+
                         # 成交量单位：手/万手（万手保留2位）
                         if 'volume' in hist_df.columns:
                             vmax = float(hist_df['volume'].max()) if len(hist_df) else 0.0
@@ -951,7 +969,13 @@ def render_stock_prediction_content():
                         show_df = hist_df[cols].rename(columns={
                             'date': '日期', 'open': '开盘价 (元)', 'high': '最高价 (元)', 'low': '最低价 (元)', 'close': '收盘价 (元)'
                         })
-                        st.dataframe(show_df.tail(200), use_container_width=True)
+
+                        # 显示范围切换
+                        show_all = st.toggle("显示全部", value=False)
+                        if show_all:
+                            st.dataframe(show_df, use_container_width=True)
+                        else:
+                            st.dataframe(show_df.tail(200), use_container_width=True)
                     except Exception as _:
                         st.info("历史数据暂不可用")
 
@@ -1040,6 +1064,57 @@ def render_stock_prediction_content():
         create_sidebar_status_section()
 
     # 底部信息
+
+
+def render_direction_backtest_page():
+    import pandas as pd
+    from app.backtesting import run_direction_backtest
+
+    st.title("🧪 方向回测（滚动）")
+    st.write("针对未来 h 个交易日的涨跌方向命中率，进行滚动回测与可视化。")
+
+    stock_code = st.sidebar.text_input("股票代码", value="000968").strip()
+    period_display = st.sidebar.selectbox("历史数据周期", ["6个月","1年","2年","5年"], index=3)
+    period_map = {"6个月":"6mo","1年":"1y","2年":"2y","5年":"5y"}
+    period = period_map[period_display]
+
+    lookback = st.sidebar.number_input("历史窗口长度 lookback", 100, 5000, 1024, step=50)
+    pred_len = st.sidebar.number_input("单次预测长度 pred_len", 1, 120, 10)
+    horizons_text = st.sidebar.text_input("评估步长 horizons（逗号分隔）", value="1,5,10")
+    temperature = st.sidebar.slider("采样温度 T", 0.1, 2.0, 0.6, 0.05)
+    top_p = st.sidebar.slider("核采样 top_p", 0.1, 1.0, 0.8, 0.05)
+    sample_count = st.sidebar.slider("采样次数", 1, 3, 3)
+    step = st.sidebar.number_input("滚动步长 step", 1, 20, 5)
+    eps = st.sidebar.number_input("微幅过滤阈值 eps", 0.0, 0.05, 0.005, format="%0.3f")
+
+    if st.button("🚀 开始回测", type="primary"):
+        try:
+            horizons = [int(x) for x in horizons_text.split(',') if x.strip()]
+            with st.spinner("回测运行中..."):
+                summary_df, sum_csv, fig_path = run_direction_backtest(
+                    stock=stock_code,
+                    period=period,
+                    lookback=int(lookback),
+                    pred_len=max(int(pred_len), max(horizons)),
+                    horizons=horizons,
+                    temperature=float(temperature),
+                    top_p=float(top_p),
+                    sample_count=int(sample_count),
+                    step=int(step),
+                    eps=float(eps),
+                )
+            st.success("回测完成！")
+            st.subheader("📊 方向准确率汇总")
+            fmt = {"accuracy":"{:.3f}".format, "accuracy_filtered":"{:.3f}".format}
+            st.dataframe(summary_df.style.format(fmt), use_container_width=True)
+            st.subheader("📈 准确率曲线")
+            from PIL import Image
+            img = Image.open(fig_path)
+            st.image(img, caption=str(fig_path.name), use_column_width=True)
+            st.info(f"结果已保存到: volumes/backtest/{stock_code}/")
+        except Exception as e:
+            st.error(f"回测失败: {e}")
+
     st.sidebar.markdown("---")
     st.sidebar.markdown("""
     **🤖 Powered by Gordon**

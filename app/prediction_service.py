@@ -105,7 +105,7 @@ class StockPredictionService:
         self.default_params = {
             'lookback': 400,  # 历史数据长度
             'pred_len': 30,   # 预测天数
-            'max_context': 512,
+            'max_context': 2048,
             'T': 1.0,         # 温度参数
             'top_p': 0.9,     # 核采样
             'top_k': 0,       # top-k采样
@@ -125,9 +125,9 @@ class StockPredictionService:
                 logger.warning("CUDA不可用，切换到CPU")
                 self.device = "cpu"
 
-            # 1) 优先尝试从本地 volumes/models 加载
-            local_tokenizer = Path("volumes/models/Kronos-Tokenizer-base")
-            local_model = Path("volumes/models/Kronos-small")
+            # 1) 优先尝试从本地 volumes/models 加载（2k 上下文）
+            local_tokenizer = Path("volumes/models/Kronos-Tokenizer-2k")
+            local_model = Path("volumes/models/Kronos-base")
 
             if MODEL_IMPORT_OK and local_tokenizer.exists() and local_model.exists():
                 try:
@@ -150,9 +150,9 @@ class StockPredictionService:
             # 2) 回退到 HuggingFace 在线仓库
             if MODEL_IMPORT_OK:
                 try:
-                    logger.info("尝试从 HuggingFace 加载预训练模型")
-                    tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-base")
-                    model = Kronos.from_pretrained("NeoQuasar/Kronos-small")
+                    logger.info("尝试从 HuggingFace 加载2k上下文预训练模型")
+                    tokenizer = KronosTokenizer.from_pretrained("NeoQuasar/Kronos-Tokenizer-2k")
+                    model = Kronos.from_pretrained("NeoQuasar/Kronos-base")
                     self.predictor = KronosPredictor(
                         model=model,
                         tokenizer=tokenizer,
@@ -322,6 +322,18 @@ class StockPredictionService:
                         except Exception:
                             pass
                         logger.info(f"使用本地缓存数据: {stock_code}, {len(df)} 条记录")
+
+
+                # 确保按请求的 period 获得足够跨度的数据（即便缓存命中也做跨度校验）
+                try:
+                    expected_days = {"6mo": 180, "1y": 365, "2y": 2*365, "5y": 5*365}.get(period, 365)
+                    if df is not None and len(df) > 0:
+                        span_days = int((pd.Timestamp(df.index.max()) - pd.Timestamp(df.index.min())).days)
+                        if span_days < expected_days * 0.8:
+                            logger.info(f"缓存跨度不足({span_days}d < {expected_days}d*0.8)，按 period={period} 重新获取 {stock_code} 数据")
+                            df = self.data_fetcher.fetch_stock_data(stock_code, period=period)
+                except Exception as e:
+                    logger.warning(f"period 跨度校验/补齐失败: {e}")
 
             # 1) 条件性优先使用 Qlib（有限使用）：当请求的历史窗口较大时优先Qlib，否则走在线数据
             #    - 阀值可通过环境变量 QLIB_LOOKBACK_THRESHOLD 配置，默认 1200（~5年交易日）
@@ -516,9 +528,83 @@ class StockPredictionService:
             # 用蒙特卡洛均值替换收盘价
             pred_df['close'] = pred_mean
 
+            # 标尺校准（仅当首日偏差极端时）：将首日预测锚定到最后收盘价的同量级
+            try:
+                calibrate = os.getenv('CALIBRATE_FIRST_STEP', '1') == '1'
+            except Exception:
+                calibrate = True
+            if calibrate and len(pred_df) > 0:
+                first_pred = float(pred_df['close'].iloc[0])
+                last_close = float(df['close'].iloc[-1])
+                if first_pred > 0 and last_close > 0:
+                    ratio = first_pred / last_close
+                    # 阈值可根据日尺度适当放宽，这里 ±50%
+                    if ratio < 0.5 or ratio > 1.5:
+                        scale = last_close / first_pred
+                        for c in ['open','high','low','close']:
+                            if c in pred_df.columns:
+                                pred_df[c] = pred_df[c] * scale
+                        # 同步不确定性区间（基于close）
+                        pred_upper = pred_upper * scale
+                        pred_lower = pred_lower * scale
+                        pred_max = pred_max * scale
+                        pred_min = pred_min * scale
+                        pred_mean = pred_mean * scale
+                        logger.warning(f"已执行首日标尺校准: last_close={last_close:.2f}, first_pred(before)={first_pred:.2f}, scale={scale:.3f}")
+
+            # 基于A股日内涨跌幅约束的后处理（保证OHLC一致性、非负、日内变动不超限）
+            last_close = float(df['close'].iloc[-1])
+            try:
+                # 自动识别板块日内涨跌幅限制（可被环境变量 DAILY_LIMIT_PCT 覆盖）
+                code = str(stock_code)
+                auto_limit = 0.2 if (code.startswith('688') or code.startswith('300')) else 0.1
+                daily_limit = float(os.getenv('DAILY_LIMIT_PCT', str(auto_limit)))
+                prev_close = last_close
+                for i in range(len(pred_df)):
+                    # 转为float并处理NaN/Inf
+                    for c in ['open','high','low','close']:
+                        try:
+                            val = float(pred_df.iloc[i][c])
+                        except Exception:
+                            val = prev_close
+                        if not np.isfinite(val):
+                            val = prev_close
+                        pred_df.iat[i, pred_df.columns.get_loc(c)] = val
+
+                    # 计算当日允许区间
+                    band_min = max(prev_close * (1 - daily_limit), 0.01)
+                    band_max = prev_close * (1 + daily_limit)
+
+                    # 先对 close 进行区间裁剪
+                    c_val = float(pred_df.iloc[i]['close'])
+                    c_val = float(np.clip(c_val, band_min, band_max))
+
+                    # 对 open/high/low 裁剪到同一日内区间
+                    o_val = float(np.clip(float(pred_df.iloc[i]['open']), band_min, band_max))
+                    h_val = float(np.clip(float(pred_df.iloc[i]['high']), band_min, band_max))
+                    l_val = float(np.clip(float(pred_df.iloc[i]['low']), band_min, band_max))
+
+                    # 保证OHLC一致性：high>=max(o,c,l)；low<=min(o,c,l)
+                    high_fixed = max(h_val, o_val, c_val)
+                    low_fixed = min(l_val, o_val, c_val)
+
+                    pred_df.iat[i, pred_df.columns.get_loc('open')] = o_val
+                    pred_df.iat[i, pred_df.columns.get_loc('high')] = high_fixed
+                    pred_df.iat[i, pred_df.columns.get_loc('low')] = low_fixed
+                    pred_df.iat[i, pred_df.columns.get_loc('close')] = c_val
+
+                    prev_close = c_val
+
+                # 体量非负，amount 对齐 close*volume
+                if 'volume' in pred_df.columns:
+                    pred_df['volume'] = np.maximum(pd.to_numeric(pred_df['volume'], errors='coerce').fillna(0), 0)
+                if 'amount' in pred_df.columns and 'volume' in pred_df.columns:
+                    pred_df['amount'] = pred_df['close'] * pred_df['volume']
+            except Exception as _:
+                pass
+
             # 计算预测统计
-            last_close = df['close'].iloc[-1]
-            pred_close = pred_df['close'].iloc[-1]
+            pred_close = float(pred_df['close'].iloc[-1])
             change_pct = (pred_close - last_close) / last_close * 100
 
             # 计算趋势
@@ -548,6 +634,15 @@ class StockPredictionService:
             except Exception:
                 pass
 
+            # 记录首日预测相对历史收盘的比例，用于排查极端离散
+            try:
+                first_pred = float(pred_df['close'].iloc[0]) if len(pred_df) > 0 else None
+                if first_pred and last_close and (first_pred > 0) and (last_close > 0):
+                    ratio = first_pred / last_close
+                    if ratio < 0.3 or ratio > 3.0:
+                        logger.warning(f"首日预测价格与最后收盘差异过大: last_close={last_close:.2f}, first_pred={first_pred:.2f}, ratio={ratio:.3f}")
+            except Exception:
+                pass
 
             result = {
                 'success': True,

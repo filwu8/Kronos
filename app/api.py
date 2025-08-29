@@ -181,14 +181,14 @@ async def model_status():
 
 
 @app.post("/refresh/{stock_code}")
-async def refresh_stock(stock_code: str):
-    """强制在线刷新某只股票的缓存并返回概要"""
+async def refresh_stock(stock_code: str, period: str = "1y"):
+    """增量刷新某只股票的缓存，支持指定 period（默认1y）"""
     global prediction_service
     if prediction_service is None:
         raise HTTPException(status_code=503, detail="预测服务未初始化")
     try:
         fetcher = prediction_service.data_fetcher
-        info = fetcher.refresh_stock_cache(stock_code)
+        info = fetcher.refresh_stock_cache(stock_code, period=period)
         if not info:
             raise HTTPException(status_code=502, detail="在线数据源无返回或解析失败")
         return {"success": True, "data": info}

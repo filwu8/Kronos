@@ -240,29 +240,102 @@ class AStockDataFetcher:
             self.last_cache_status = 'miss'
             return None
     def refresh_stock_cache(self, stock_code: str, period: str = "1y", frequency: str = "daily") -> Optional[dict]:
-        """强制在线拉取并写入缓存，返回最后交易日等信息"""
-        src = None
-        df = self.fetch_data_akshare(stock_code, period=period, frequency=frequency)
-        if df is not None and len(df) > 0:
-            src = 'akshare'
-        else:
-            df = self.fetch_data_yfinance(stock_code, period=period)
-            if df is not None and len(df) > 0:
-                src = 'yfinance'
+        """增量刷新缓存：
+        - 若已存在缓存：仅获取“最后一行日期+1”到今天的增量数据并合并（不截断历史）
+        - 若不存在缓存：按 period 获取并写入
+        返回：数据源、最后日期、总行数
+        """
+        # 先尝试读取旧缓存
+        old = self._load_from_cache(stock_code)
+        if old is not None and len(old) > 0:
+            # 计算增量起始日期
+            last_dt = pd.Timestamp(old.index.max()).normalize()
+            start_dt = (last_dt + pd.Timedelta(days=1))
+            today = datetime.now()
+            if start_dt.normalize() > pd.Timestamp(today.date()):
+                # 已是最新，无需拉取
+                self.last_source = 'cache'
+                self.last_cache_status = 'hit'
+                return {
+                    'source': self.last_source,
+                    'last_date': last_dt.strftime('%Y-%m-%d'),
+                    'rows': int(len(old))
+                }
+
+            # 优先 akshare 增量
+            try:
+                akshare_code, _ = self.normalize_stock_code(stock_code)
+                inc = ak.stock_zh_a_hist(
+                    symbol=akshare_code,
+                    period=frequency,
+                    start_date=start_dt.strftime('%Y%m%d'),
+                    end_date=today.strftime('%Y%m%d'),
+                    adjust="qfq",
+                )
+                if inc is not None and not inc.empty:
+                    inc = inc.rename(columns={
+                        '日期': 'date', '开盘': 'open', '收盘': 'close', '最高': 'high', '最低': 'low', '成交量': 'volume', '成交额': 'amount'
+                    })
+                    inc['date'] = pd.to_datetime(inc['date'])
+                    inc = inc.set_index('date')
+                    for c in ['open','high','low','close','volume']:
+                        inc[c] = pd.to_numeric(inc[c], errors='coerce')
+                    if 'amount' not in inc.columns:
+                        inc['amount'] = inc['close'] * inc['volume']
+                    inc = inc.dropna().sort_index()
+                else:
+                    inc = None
+                src = 'akshare' if inc is not None and len(inc) > 0 else None
+            except Exception:
+                inc = None
+                src = None
+
+            # 如果 akshare 无增量，尝试 yfinance 增量
+            if inc is None or len(inc) == 0:
+                try:
+                    _, y_code = self.normalize_stock_code(stock_code)
+                    import yfinance as yf
+                    ticker = yf.Ticker(y_code)
+                    ydf = ticker.history(start=start_dt.strftime('%Y-%m-%d'))
+                    if ydf is not None and not ydf.empty:
+                        ydf.columns = ydf.columns.str.lower()
+                        if 'amount' not in ydf.columns:
+                            ydf['amount'] = ydf['close'] * ydf['volume']
+                        need = ['open','high','low','close','volume','amount']
+                        inc = ydf[need].dropna().sort_index()
+                        src = 'yfinance'
+                except Exception:
+                    inc = None
+
+            # 合并并写缓存
+            merged = old
+            if inc is not None and len(inc) > 0:
+                merged = pd.concat([old[~old.index.isin(inc.index)], inc]).sort_index()
+                self._save_to_cache(stock_code, merged)
+                self.last_source = src or 'unknown'
+                self.last_cache_status = 'written'
+            else:
+                # 没有可用增量，保持原样
+                self.last_source = 'cache'
+                self.last_cache_status = 'hit'
+
+            final_last = pd.Timestamp(merged.index.max())
+            return {
+                'source': self.last_source,
+                'last_date': final_last.strftime('%Y-%m-%d'),
+                'rows': int(len(merged))
+            }
+
+        # 若无旧缓存：按 period 获取并写入（内部已做合并与写入）
+        df = self.fetch_stock_data(stock_code, period=period, frequency=frequency)
         if df is None or len(df) == 0:
             return None
-        # 写缓存
-        self._save_to_cache(stock_code, df)
-        self.last_source = src or 'unknown'
+        # fetch_stock_data 已保存缓存并设置 last_source
         self.last_cache_status = 'written'
-        last_dt = df.index.max()
-        try:
-            last_str = pd.Timestamp(last_dt).strftime('%Y-%m-%d')
-        except Exception:
-            last_str = str(last_dt)
+        last_dt = pd.Timestamp(df.index.max())
         return {
-            'source': self.last_source,
-            'last_date': last_str,
+            'source': getattr(self, 'last_source', 'unknown'),
+            'last_date': last_dt.strftime('%Y-%m-%d'),
             'rows': int(len(df))
         }
 
