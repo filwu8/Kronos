@@ -75,8 +75,17 @@ def load_local_resources():
     }
     """)
 
-    bundle_html = f"<style>{aggressive_css}{''.join(css_bundle)}</style>\n<script>{''.join(js_bundle)}</script>"
+    # 仅通过 markdown 注入 CSS（安全生效）；JS 改用 components.html 执行，避免被忽略
+    bundle_html = f"<style>{aggressive_css}{''.join(css_bundle)}</style>"
     st.markdown(bundle_html, unsafe_allow_html=True)
+
+    # 以组件方式注入并执行 JS（不占空间）
+    try:
+        import streamlit.components.v1 as components
+        if js_bundle:
+            components.html(f"<script>{''.join(js_bundle)}</script>", height=0)
+    except Exception:
+        pass
 
 # 加载本地资源（注入 CSS/JS bundle）
 load_local_resources()
@@ -119,10 +128,16 @@ def get_stock_prediction(stock_code, **params):
             **params
         }
 
+        # 根据性能模式动态调整超时时间
+        if "高性能模式" in st.session_state.get('performance_mode', ''):
+            timeout_seconds = 300  # 高性能模式：5分钟
+        else:
+            timeout_seconds = 180  # 标准模式：3分钟
+
         response = requests.post(
             f"{API_BASE_URL}/predict",
             json=payload,
-            timeout=120  # 压缩超时：避免前端长期挂起，后端内部有CPU回退与缓存
+            timeout=timeout_seconds
         )
 
         if response.status_code == 200:
@@ -351,16 +366,22 @@ def create_price_chart(historical_data, predictions, stock_info):
             )
 
 
-            # 计算预测相对历史最后收盘的涨跌额/涨跌幅（中文格式）
+            # 计算“日内涨跌额/涨跌幅（对比前一交易日收盘）”，与表格逻辑对齐
             try:
                 last_close_val = float(hist_df['close'].iloc[-1]) if len(hist_df) > 0 else None
             except Exception:
                 last_close_val = None
             if last_close_val is not None and len(pred_df) > 0:
-                pred_df['_chg'] = pd.to_numeric(pred_df['close'], errors='coerce') - last_close_val
-                pred_df['_chg_pct'] = (pred_df['_chg'] / last_close_val) * 100
-                chg_disp = pred_df['_chg'].map(lambda x: '-' if pd.isna(x) else f"{x:+.2f}")
-                chg_pct_disp = pred_df['_chg_pct'].map(lambda x: '-' if (pd.isna(x) or np.isinf(x)) else f"{x:+.2f}%")
+                close_series = pd.to_numeric(pred_df.get('close'), errors='coerce')
+                prev_close_series = close_series.shift(1)
+                # 首日用历史最后收盘作为基准
+                if len(prev_close_series) > 0:
+                    prev_close_series.iloc[0] = last_close_val
+                denom = prev_close_series.replace(0, np.nan)
+                _chg = close_series - denom
+                _chg_pct = (_chg / denom) * 100
+                chg_disp = _chg.map(lambda x: '-' if pd.isna(x) else f"{x:+.2f}")
+                chg_pct_disp = _chg_pct.map(lambda x: '-' if (pd.isna(x) or np.isinf(x)) else f"{x:+.2f}%")
             else:
                 chg_disp = ['-'] * len(pred_df)
                 chg_pct_disp = ['-'] * len(pred_df)
@@ -493,33 +514,24 @@ def create_price_chart(historical_data, predictions, stock_info):
 
 def create_metrics_display(summary):
     """创建指标展示"""
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
 
     with col1:
-        st.metric(
-            label="当前价格",
-            value=f"¥{summary['current_price']:.2f}"
-        )
+        st.metric(label="当前价格", value=f"¥{summary['current_price']:.2f}")
 
     with col2:
-        st.metric(
-            label="预测价格",
-            value=f"¥{summary['predicted_price']:.2f}",
-            delta=f"{summary['change_percent']:.2f}%"
-        )
+        st.metric(label="预测价格", value=f"¥{summary['predicted_price']:.2f}", delta=f"{summary['change_percent']:.2f}%")
 
     with col3:
-        st.metric(
-            label="预期变化",
-            value=f"¥{summary['change_amount']:.2f}"
-        )
+        st.metric(label="预期变化", value=f"¥{summary['change_amount']:.2f}")
 
     with col4:
         trend_color = "🔴" if summary['trend'] == "下跌" else "🟢" if summary['trend'] == "上涨" else "🟡"
-        st.metric(
-            label="趋势预测",
-            value=f"{trend_color} {summary['trend']}"
-        )
+        st.metric(label="趋势预测", value=f"{trend_color} {summary['trend']}")
+
+    with col5:
+        conf = summary.get('confidence', '—')
+        st.metric(label="置信度", value=str(conf))
 
 
 def main():
@@ -608,7 +620,7 @@ def render_stock_prediction_content():
     ).strip()
 
     # 预测参数
-    pred_len = st.sidebar.slider("预测天数", 1, 60, 30)
+    pred_len = st.sidebar.slider("预测天数", 1, 120, 30, help="支持1-120天预测，建议30天以内")
     # 历史数据周期选项（中文显示，英文值）
     period_options = {
         "6个月": "6mo",
@@ -621,28 +633,76 @@ def render_stock_prediction_content():
 
     # 高级参数
     with st.sidebar.expander("🔧 高级参数"):
+        # 调试模式开关（展示原始预测 vs 约束后预测）
+        debug_mode = st.checkbox("调试模式：显示原始预测(诊断)", value=False, help="仅用于诊断，显示模型原始预测（未经过涨跌幅/量化约束）")
+
+        # 预测模式选择
+        prediction_mode = st.radio(
+            "⚡ 预测模式",
+            ["🚀 快速模式 (30秒)", "⚖️ 平衡模式 (1-3分钟)", "🎯 精确模式 (3-5分钟)"],
+            index=1,
+            help="快速模式：减少计算量，适合快速验证\n平衡模式：日常使用推荐\n精确模式：追求最高准确度"
+        )
+
         # 性能模式选择
         performance_mode = st.selectbox(
-            "性能模式",
+            "硬件模式",
             ["标准模式", "高性能模式 (RTX 5090)"],
             index=1,
             help="RTX 5090用户推荐高性能模式"
         )
 
-        # 根据性能模式调整默认值
+        # 根据预测模式和性能模式调整参数
+        if "快速模式" in prediction_mode:
+            # 快速模式：优化速度
+            auto_lookback = 200
+            auto_sample_count = 1
+            auto_pred_len = min(pred_len, 10)
+            mode_color = "🟢"
+            time_estimate = "预计30秒内完成"
+        elif "平衡模式" in prediction_mode:
+            # 平衡模式：速度与准确度平衡
+            auto_lookback = 400 if performance_mode != "高性能模式 (RTX 5090)" else 800
+            auto_sample_count = 1 if performance_mode != "高性能模式 (RTX 5090)" else 3
+            auto_pred_len = pred_len
+            mode_color = "🟡"
+            time_estimate = "预计1-3分钟完成"
+        else:  # 精确模式
+            # 精确模式：追求准确度
+            auto_lookback = 800 if performance_mode != "高性能模式 (RTX 5090)" else 1500
+            auto_sample_count = 3 if performance_mode != "高性能模式 (RTX 5090)" else 5
+            auto_pred_len = pred_len
+            mode_color = "🔴"
+            time_estimate = "预计3-5分钟完成"
+
+        st.info(f"{mode_color} {time_estimate}")
+
+        # 根据性能模式调整最大值
         if performance_mode == "高性能模式 (RTX 5090)":
             max_lookback = 5000
-            default_lookback = 2000
+            max_sample_count = 10
             help_text = "RTX 5090性能强劲，支持超大数据量处理"
         else:
             max_lookback = 1000
-            default_lookback = 400
+            max_sample_count = 5
             help_text = "标准模式，适合一般硬件配置"
 
-        lookback = st.slider("历史数据长度", 50, max_lookback, default_lookback, help=help_text)
-        temperature = st.slider("采样温度", 0.1, 2.0, 1.0, 0.1)
-        top_p = st.slider("核采样概率", 0.1, 1.0, 0.9, 0.05)
-        sample_count = st.slider("采样次数", 1, 3, 1)
+        # 使用提示
+        st.caption("提示：关闭“使用推荐参数”可自定义 历史窗口长度(lookback)、采样次数(sample_count)；下方可调整 采样温度(T)/核采样(top_p)；侧边栏顶部可设置 预测天数(pred_len)。提高置信度建议：增大采样次数、降低温度/TopP、缩短预测天数、适度增大历史窗口。")
+
+        # 参数设置
+        use_auto_params = st.checkbox("使用推荐参数", value=True, help="根据预测模式自动优化参数")
+
+        if use_auto_params:
+            lookback = auto_lookback
+            sample_count = auto_sample_count
+            st.success(f"📊 自动参数：历史数据{lookback}天，采样{sample_count}次")
+        else:
+            lookback = st.slider("历史数据长度", 50, max_lookback, auto_lookback, help=help_text)
+            sample_count = st.slider("采样次数", 1, max_sample_count, auto_sample_count, help="更多采样提升准确度但增加计算时间")
+
+        temperature = st.slider("采样温度", 0.1, 2.0, 1.0, 0.1, help="控制预测的随机性")
+        top_p = st.slider("核采样概率", 0.1, 1.0, 0.9, 0.05, help="控制采样的多样性")
 
     # 若未点击“开始预测”，但 session_state 有历史结果，直接回显（不触发侧边栏按钮）
     last = st.session_state.get('last_prediction')
@@ -659,7 +719,7 @@ def render_stock_prediction_content():
                 data['stock_info']
             )
             if fig is not None:
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True, config={'displaylogo': False, 'displayModeBar': True, 'locale': 'zh-CN'})
             else:
                 st.error("无法生成价格走势图（历史数据缺失或格式不符）")
             rendered_result = True
@@ -731,8 +791,15 @@ def render_stock_prediction_content():
         except Exception:
             pass
 
-        # 显示加载状态
-        with st.spinner(f"正在预测 {stock_code}..."):
+        # 显示加载状态和预计时间
+        if "快速模式" in prediction_mode:
+            spinner_text = f"🚀 快速预测 {stock_code}... (预计30秒)"
+        elif "平衡模式" in prediction_mode:
+            spinner_text = f"⚖️ 平衡预测 {stock_code}... (预计1-3分钟)"
+        else:
+            spinner_text = f"🎯 精确预测 {stock_code}... (预计3-5分钟)"
+
+        with st.spinner(spinner_text):
 
             # 获取股票信息
             stock_info_response = get_stock_info(stock_code)
@@ -752,7 +819,8 @@ def render_stock_prediction_content():
                 lookback=lookback,
                 temperature=temperature,
                 top_p=top_p,
-                sample_count=sample_count
+                sample_count=sample_count,
+                debug=bool(debug_mode)
             )
 
 
@@ -774,6 +842,14 @@ def render_stock_prediction_content():
                     data['stock_info']
                 )
                 if fig is not None:
+                    # 参数概览（中文）
+                    with st.expander("⚙️ 参数概览（当前设置）", expanded=False):
+                        st.write(f"预测天数(pred_len)：{pred_len} 天")
+                        st.write(f"历史窗口(lookback)：{lookback} 天")
+                        st.write(f"采样次数(sample_count)：{sample_count} 次")
+                        st.write(f"采样温度(T)：{temperature}")
+                        st.write(f"核采样(top_p)：{top_p}")
+
                     # 生成导出图片的安全文件名，避免 stock_info 为空报错
                     _si = data.get('stock_info') or {}
                     _stock_name = _si.get('name') or _si.get('code') or '股票'
@@ -970,12 +1046,24 @@ def render_stock_prediction_content():
                             'date': '日期', 'open': '开盘价 (元)', 'high': '最高价 (元)', 'low': '最低价 (元)', 'close': '收盘价 (元)'
                         })
 
+                        # 列显示格式：价格两位小数；成交量按单位
+                        column_cfg = {
+                            '开盘价 (元)': st.column_config.NumberColumn(format='%.2f'),
+                            '最高价 (元)': st.column_config.NumberColumn(format='%.2f'),
+                            '最低价 (元)': st.column_config.NumberColumn(format='%.2f'),
+                            '收盘价 (元)': st.column_config.NumberColumn(format='%.2f'),
+                        }
+                        if '成交量 (万手)' in show_df.columns:
+                            column_cfg['成交量 (万手)'] = st.column_config.NumberColumn(format='%.2f')
+                        elif '成交量 (手)' in show_df.columns:
+                            column_cfg['成交量 (手)'] = st.column_config.NumberColumn(format='%.0f')
+
                         # 显示范围切换
                         show_all = st.toggle("显示全部", value=False)
                         if show_all:
-                            st.dataframe(show_df, use_container_width=True)
+                            st.dataframe(show_df, use_container_width=True, column_config=column_cfg)
                         else:
-                            st.dataframe(show_df.tail(200), use_container_width=True)
+                            st.dataframe(show_df.tail(200), use_container_width=True, column_config=column_cfg)
                     except Exception as _:
                         st.info("历史数据暂不可用")
 
@@ -1004,6 +1092,16 @@ def render_stock_prediction_content():
                 # 重命名列
                 pred_df = pred_df.rename(columns=column_names)
 
+                # 追加重命名：不确定性区间相关列
+                uncertainty_columns = {
+                    'close_upper': '收盘上界 (元)',
+                    'close_lower': '收盘下界 (元)',
+                    'close_max': '收盘最大 (元)',
+                    'close_min': '收盘最小 (元)',
+                    'close_std': '收盘标准差 (元)'
+                }
+                pred_df = pred_df.rename(columns=uncertainty_columns)
+
                 # 成交量单位自适应（两档）：手 / 万手（万手保留2位小数）
                 if '成交量 (手)' in pred_df.columns:
                     vol_max = float(pred_df['成交量 (手)'].max()) if len(pred_df) else 0.0
@@ -1014,15 +1112,48 @@ def render_stock_prediction_content():
                         # 保留整数手
                         pred_df['成交量 (手)'] = pred_df['成交量 (手)'].round(0).astype('Int64')
 
-                # 格式化数值
+                # 先保留数值，再在显示层格式化为两位小数
                 for col in ['开盘价 (元)', '最高价 (元)', '最低价 (元)', '收盘价 (元)']:
                     if col in pred_df.columns:
-                        pred_df[col] = pred_df[col].round(2)
+                        pred_df[col] = pd.to_numeric(pred_df[col], errors='coerce')
 
                 if '成交额 (万元)' in pred_df.columns:
-                    pred_df['成交额 (万元)'] = (pred_df['成交额 (万元)'] / 10000).round(2)
+                    pred_df['成交额 (万元)'] = pd.to_numeric(pred_df['成交额 (万元)'], errors='coerce') / 10000
 
-                st.dataframe(pred_df, use_container_width=True)
+                # 计算涨跌幅（首日相对历史最后收盘）
+                try:
+                    last_hist_close = None
+                    if isinstance(data.get('historical_data'), list) and len(data['historical_data']) > 0:
+                        last_hist_close = float(data['historical_data'][-1].get('close', np.nan))
+                    close_series = pd.to_numeric(pred_df.get('收盘价 (元)'), errors='coerce')
+                    prev_close_series = close_series.shift(1)
+                    if last_hist_close and np.isfinite(last_hist_close):
+                        # 首日用历史最后收盘作为基准
+                        prev_close_series.iloc[0] = last_hist_close
+                    # 避免除零
+                    denom = prev_close_series.replace(0, np.nan)
+                    chg_pct = ((close_series - denom) / denom) * 100.0
+                    pred_df['涨跌幅 (%)'] = chg_pct.round(2)
+                except Exception:
+                    pred_df['涨跌幅 (%)'] = np.nan
+
+                st.dataframe(
+                    pred_df,
+                    use_container_width=True,
+                    column_config={
+                        '开盘价 (元)': st.column_config.NumberColumn(format='%.2f'),
+                        '最高价 (元)': st.column_config.NumberColumn(format='%.2f'),
+                        '最低价 (元)': st.column_config.NumberColumn(format='%.2f'),
+                        '收盘价 (元)': st.column_config.NumberColumn(format='%.2f'),
+                        '收盘上界 (元)': st.column_config.NumberColumn(format='%.2f') if '收盘上界 (元)' in pred_df.columns else None,
+                        '收盘下界 (元)': st.column_config.NumberColumn(format='%.2f') if '收盘下界 (元)' in pred_df.columns else None,
+                        '收盘最大 (元)': st.column_config.NumberColumn(format='%.2f') if '收盘最大 (元)' in pred_df.columns else None,
+                        '收盘最小 (元)': st.column_config.NumberColumn(format='%.2f') if '收盘最小 (元)' in pred_df.columns else None,
+                        '收盘标准差 (元)': st.column_config.NumberColumn(format='%.2f') if '收盘标准差 (元)' in pred_df.columns else None,
+                        '成交额 (万元)': st.column_config.NumberColumn(format='%.2f') if '成交额 (万元)' in pred_df.columns else None,
+                        '涨跌幅 (%)': st.column_config.NumberColumn(format='%.2f')
+                    }
+                )
 
             # 免责声明
             st.markdown("---")
@@ -1083,7 +1214,7 @@ def render_direction_backtest_page():
     horizons_text = st.sidebar.text_input("评估步长 horizons（逗号分隔）", value="1,5,10")
     temperature = st.sidebar.slider("采样温度 T", 0.1, 2.0, 0.6, 0.05)
     top_p = st.sidebar.slider("核采样 top_p", 0.1, 1.0, 0.8, 0.05)
-    sample_count = st.sidebar.slider("采样次数", 1, 3, 3)
+    sample_count = st.sidebar.slider("采样次数", 1, 10, 3, help="回测模式支持更多采样次数，提升结果可靠性")
     step = st.sidebar.number_input("滚动步长 step", 1, 20, 5)
     eps = st.sidebar.number_input("微幅过滤阈值 eps", 0.0, 0.05, 0.005, format="%0.3f")
 

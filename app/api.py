@@ -46,7 +46,8 @@ class PredictionRequest(BaseModel):
     lookback: int = Field(1000, ge=50, le=5000, description="历史数据长度，RTX 5090支持大数据量")
     temperature: float = Field(1.0, ge=0.1, le=2.0, description="采样温度")
     top_p: float = Field(0.9, ge=0.1, le=1.0, description="核采样概率")
-    sample_count: int = Field(1, ge=1, le=5, description="采样次数")
+    sample_count: int = Field(1, ge=1, le=10, description="采样次数，高性能模式支持更多")
+    debug: bool = Field(False, description="调试模式：返回原始预测(未约束)用于诊断")
 
 
 class BatchPredictionRequest(BaseModel):
@@ -204,12 +205,14 @@ async def predict_stock(request: PredictionRequest):
     预测单只股票价格
     """
     global prediction_service
+    import time
 
     if prediction_service is None:
         raise HTTPException(status_code=503, detail="预测服务未初始化")
 
+    start_time = time.time()
     try:
-        logger.info(f"收到预测请求: {request.stock_code}")
+        logger.info(f"收到预测请求: {request.stock_code}, 参数: lookback={request.lookback}, sample_count={request.sample_count}, pred_len={request.pred_len}")
 
         # 执行预测
         result = prediction_service.predict_stock(
@@ -219,18 +222,34 @@ async def predict_stock(request: PredictionRequest):
             lookback=request.lookback,
             T=request.temperature,
             top_p=request.top_p,
-            sample_count=request.sample_count
+            sample_count=request.sample_count,
+            debug=request.debug
         )
+
+        elapsed_time = time.time() - start_time
+        logger.info(f"预测完成: {request.stock_code}, 耗时: {elapsed_time:.2f}秒")
 
         if not result['success']:
             raise HTTPException(status_code=400, detail=result['error'])
+
+        # 添加性能信息到响应
+        if result.get('data'):
+            result['data']['performance'] = {
+                'elapsed_time': round(elapsed_time, 2),
+                'parameters': {
+                    'lookback': request.lookback,
+                    'sample_count': request.sample_count,
+                    'pred_len': request.pred_len
+                }
+            }
 
         return PredictionResponse(**result)
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"预测请求处理失败: {str(e)}")
+        elapsed_time = time.time() - start_time
+        logger.error(f"预测请求处理失败: {str(e)}, 耗时: {elapsed_time:.2f}秒")
         raise HTTPException(status_code=500, detail=f"内部服务器错误: {str(e)}")
 
 

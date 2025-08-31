@@ -243,7 +243,7 @@ class StockPredictionService:
             })
         return out
 
-    def _format_predictions(self, pred_df: pd.DataFrame, y_timestamp: pd.Series, uncertainty_data=None) -> list:
+    def _format_predictions(self, pred_df: pd.DataFrame, y_timestamp: pd.Series, uncertainty_data=None, raw_df=None) -> list:
         """格式化预测数据，确保包含正确的日期和不确定性信息（工作日对齐）"""
         formatted_predictions = []
 
@@ -252,6 +252,10 @@ class StockPredictionService:
             last = pd.to_datetime(y_timestamp.iloc[-1]) if len(y_timestamp) > 0 else pd.Timestamp.today()
             extra = pd.bdate_range(start=last + timedelta(days=1), periods=(len(pred_df) - len(y_timestamp)))
             y_timestamp = pd.concat([y_timestamp, pd.Series(extra)], ignore_index=True)
+
+            # 注：raw_df 由上游在 debug 模式下传入，长度与 pred_df 对齐
+            # 这里只是保留 raw 值用于诊断，不参与计算
+            pass
 
         for i, (idx, row) in enumerate(pred_df.iterrows()):
             # 使用传入的y_timestamp作为日期
@@ -276,6 +280,19 @@ class StockPredictionService:
                     'close_min': float(uncertainty_data['min'][i]),
                     'close_std': float(uncertainty_data['std'][i])
                 })
+            # 若提供 raw_df（调试模式），附加原始未约束的诊断列
+            if raw_df is not None:
+                try:
+                    if i < len(raw_df):
+                        raw_row = raw_df.iloc[i]
+                        prediction_item.update({
+                            'raw_open': float(raw_row.get('open', np.nan)),
+                            'raw_high': float(raw_row.get('high', np.nan)),
+                            'raw_low': float(raw_row.get('low', np.nan)),
+                            'raw_close': float(raw_row.get('close', np.nan))
+                        })
+                except Exception:
+                    pass
 
             formatted_predictions.append(prediction_item)
 
@@ -304,6 +321,8 @@ class StockPredictionService:
             lookback = kwargs.get('lookback', 100)
             period = kwargs.get('period', '1y')
             pred_len = kwargs.get('pred_len', self.default_params['pred_len'])
+            debug = bool(kwargs.get('debug', False))
+
             df = None
             stock_info = None
 
@@ -460,12 +479,48 @@ class StockPredictionService:
                         random_change = np.random.normal(0, uncertainty_factor)
                         all_predictions[i][j] *= (1 + random_change)
 
-            pred_mean = np.mean(all_predictions, axis=0)
+            # 使用中位数聚合，更抗异常值
+            pred_median = np.median(all_predictions, axis=0)
             pred_std = np.std(all_predictions, axis=0)
             pred_upper = np.percentile(all_predictions, 75, axis=0)  # 75分位数
             pred_lower = np.percentile(all_predictions, 25, axis=0)  # 25分位数
             pred_max = np.max(all_predictions, axis=0)
             pred_min = np.min(all_predictions, axis=0)
+
+            # 价格连续性校准：确保第一天开盘价合理
+            last_close = float(df['close'].iloc[-1])
+            if len(pred_median) > 0:
+                first_pred = pred_median[0]
+                gap_percent = (first_pred - last_close) / last_close * 100
+
+                # 如果跳空超过±3%，进行校准
+                if abs(gap_percent) > 3.0:
+                    logger.warning(f"检测到异常跳空: {gap_percent:.2f}%，进行价格连续性校准")
+
+                    # 计算合理的跳空范围（±2%以内）
+                    max_gap = 0.02  # 2%
+                    if gap_percent > 3.0:
+                        target_gap = max_gap
+                    elif gap_percent < -3.0:
+                        target_gap = -max_gap
+                    else:
+                        target_gap = gap_percent / 100
+
+                    # 计算校准因子
+                    target_price = last_close * (1 + target_gap)
+                    calibration_factor = target_price / first_pred
+
+                    # 应用校准到整个预测序列
+                    pred_median = pred_median * calibration_factor
+                    pred_upper = pred_upper * calibration_factor
+                    pred_lower = pred_lower * calibration_factor
+                    pred_max = pred_max * calibration_factor
+                    pred_min = pred_min * calibration_factor
+
+                    logger.info(f"价格连续性校准完成: {first_pred:.2f} -> {target_price:.2f} (校准因子: {calibration_factor:.3f})")
+
+            # 使用校准后的中位数作为最终预测
+            pred_mean = pred_median
 
             # 生成递增的不确定性区间（符合金融预测规律）
             for i in range(len(pred_upper)):
@@ -528,6 +583,56 @@ class StockPredictionService:
             # 用蒙特卡洛均值替换收盘价
             pred_df['close'] = pred_mean
 
+            # 价格连续性校准：确保OHLC的第一天开盘价合理（暂时禁用）
+            if False and len(pred_df) > 0:
+                last_close = float(df['close'].iloc[-1])
+                first_open = float(pred_df['open'].iloc[0])
+                gap_percent = (first_open - last_close) / last_close * 100
+
+                # 如果开盘价跳空超过±3%，进行OHLC校准
+                if abs(gap_percent) > 3.0:
+                    logger.warning(f"OHLC开盘价异常跳空: {gap_percent:.2f}%，进行校准")
+
+                    # 计算目标开盘价（限制在±2%以内）
+                    max_gap = 0.02
+                    if gap_percent > 3.0:
+                        target_gap = max_gap
+                    elif gap_percent < -3.0:
+                        target_gap = -max_gap
+                    else:
+                        target_gap = gap_percent / 100
+
+                    target_open = last_close * (1 + target_gap)
+                    open_calibration = target_open / first_open
+
+                    # 应用校准到第一天的OHLC
+                    pred_df.loc[0, 'open'] = target_open
+                    pred_df.loc[0, 'high'] = pred_df.loc[0, 'high'] * open_calibration
+                    pred_df.loc[0, 'low'] = pred_df.loc[0, 'low'] * open_calibration
+
+                    # 确保OHLC关系正确
+                    first_close = pred_df.loc[0, 'close']
+                    first_high = pred_df.loc[0, 'high']
+                    first_low = pred_df.loc[0, 'low']
+
+                    # 调整高低价确保关系正确
+                    min_price = min(target_open, first_close)
+                    max_price = max(target_open, first_close)
+
+                    if first_high < max_price:
+                        pred_df.loc[0, 'high'] = max_price * 1.005  # 略高于最高的开盘/收盘价
+                    if first_low > min_price:
+                        pred_df.loc[0, 'low'] = min_price * 0.995   # 略低于最低的开盘/收盘价
+
+                    logger.info(f"OHLC校准完成: 开盘价 {first_open:.2f} -> {target_open:.2f}")
+
+                    # 对后续天数进行渐进式校准，避免突然的价格跳跃
+                    for i in range(1, min(3, len(pred_df))):  # 校准前3天
+                        decay_factor = 0.7 ** i  # 指数衰减
+                        if decay_factor > 0.1:
+                            for col in ['open', 'high', 'low']:
+                                pred_df.loc[i, col] *= (1 + (open_calibration - 1) * decay_factor)
+
             # 标尺校准（仅当首日偏差极端时）：将首日预测锚定到最后收盘价的同量级
             try:
                 calibrate = os.getenv('CALIBRATE_FIRST_STEP', '1') == '1'
@@ -552,14 +657,26 @@ class StockPredictionService:
                         pred_mean = pred_mean * scale
                         logger.warning(f"已执行首日标尺校准: last_close={last_close:.2f}, first_pred(before)={first_pred:.2f}, scale={scale:.3f}")
 
+            # 安全的价格连续性修复
+            self._safe_price_continuity_fix(pred_df, float(df['close'].iloc[-1]), stock_code)
+
             # 基于A股日内涨跌幅约束的后处理（保证OHLC一致性、非负、日内变动不超限）
             last_close = float(df['close'].iloc[-1])
             try:
-                # 自动识别板块日内涨跌幅限制（可被环境变量 DAILY_LIMIT_PCT 覆盖）
+                # 自动识别更精确的日内涨跌幅限制（ST 5%，科创/创业20%，其余10%），允许 DAILY_LIMIT_PCT 覆盖
+                stock_name_upper = str((stock_info or {}).get('name', '')).upper()
                 code = str(stock_code)
-                auto_limit = 0.2 if (code.startswith('688') or code.startswith('300')) else 0.1
-                daily_limit = float(os.getenv('DAILY_LIMIT_PCT', str(auto_limit)))
+                base_limit = 0.05 if ('ST' in stock_name_upper or code.upper().startswith('*ST')) else (0.2 if (code.startswith('688') or code.startswith('300')) else 0.1)
+                daily_limit = float(os.getenv('DAILY_LIMIT_PCT', str(base_limit)))
                 prev_close = last_close
+                # 统一数值列为 float64，避免后续写入触发 dtype 警告
+                try:
+                    for col in ['open', 'high', 'low', 'close', 'volume', 'amount']:
+                        if col in pred_df.columns:
+                            pred_df[col] = pd.to_numeric(pred_df[col], errors='coerce').astype('float64')
+                except Exception:
+                    pass
+
                 for i in range(len(pred_df)):
                     # 转为float并处理NaN/Inf
                     for c in ['open','high','low','close']:
@@ -574,15 +691,52 @@ class StockPredictionService:
                     # 计算当日允许区间
                     band_min = max(prev_close * (1 - daily_limit), 0.01)
                     band_max = prev_close * (1 + daily_limit)
+                    # A股价格最小变动单位为0.01元，量化允许区间到分
+                    band_min_2 = float(np.ceil(band_min * 100.0) / 100.0)
+                    band_max_2 = float(np.floor(band_max * 100.0) / 100.0)
 
-                    # 先对 close 进行区间裁剪
-                    c_val = float(pred_df.iloc[i]['close'])
-                    c_val = float(np.clip(c_val, band_min, band_max))
+                    # 更自然的约束：设置内边距（默认0.2%），越界时拉回到内边界，而非极限价
+                    natural_margin = float(os.getenv('NATURAL_MARGIN_PCT', '0.002'))
+                    inner_min = min(band_max_2, max(band_min_2 * (1 + natural_margin), band_min_2 + 0.01))
+                    inner_max = max(band_min_2, min(band_max_2 * (1 - natural_margin), band_max_2 - 0.01))
 
-                    # 对 open/high/low 裁剪到同一日内区间
-                    o_val = float(np.clip(float(pred_df.iloc[i]['open']), band_min, band_max))
-                    h_val = float(np.clip(float(pred_df.iloc[i]['high']), band_min, band_max))
-                    l_val = float(np.clip(float(pred_df.iloc[i]['low']), band_min, band_max))
+
+                    # 先对 close 进行区间裁剪 + 两位小数量化（更自然：越界时拉回内边界）
+                    c_raw = float(pred_df.iloc[i]['close'])
+                    c_clip = float(np.clip(c_raw, band_min, band_max))
+                    c_val = float(np.round(c_clip, 2))
+                    if c_val >= band_max_2:
+                        c_val = inner_max
+                    elif c_val <= band_min_2:
+                        c_val = inner_min
+
+                    # 对 open/high/low 裁剪到同一日内区间 + 两位小数量化（更自然）
+                    o_raw = float(pred_df.iloc[i]['open'])
+                    h_raw = float(pred_df.iloc[i]['high'])
+                    l_raw = float(pred_df.iloc[i]['low'])
+
+                    o_clip = float(np.clip(o_raw, band_min, band_max))
+                    h_clip = float(np.clip(h_raw, band_min, band_max))
+                    l_clip = float(np.clip(l_raw, band_min, band_max))
+
+                    o_val = float(np.round(o_clip, 2))
+                    h_val = float(np.round(h_clip, 2))
+                    l_val = float(np.round(l_clip, 2))
+
+                    if o_val >= band_max_2:
+                        o_val = inner_max
+                    elif o_val <= band_min_2:
+                        o_val = inner_min
+
+                    if h_val >= band_max_2:
+                        h_val = inner_max
+                    elif h_val <= band_min_2:
+                        h_val = inner_min
+
+                    if l_val >= band_max_2:
+                        l_val = inner_max
+                    elif l_val <= band_min_2:
+                        l_val = inner_min
 
                     # 保证OHLC一致性：high>=max(o,c,l)；low<=min(o,c,l)
                     high_fixed = max(h_val, o_val, c_val)
@@ -623,8 +777,26 @@ class StockPredictionService:
                 'std': pred_std
             }
 
+            # 动态置信度评估：依据预测区间相对收盘价的平均宽度（百分比）
+            try:
+                close_series_for_conf = pd.to_numeric(pred_df['close'], errors='coerce')
+                band_width = (pred_upper - pred_lower)
+                with np.errstate(divide='ignore', invalid='ignore'):
+                    band_pct = np.where(close_series_for_conf > 0, band_width / close_series_for_conf, np.nan)
+                avg_band_pct = float(np.nanmean(band_pct)) * 100.0  # 转百分比
+                # 阈值：<4% 高；4%-8% 中；>8% 低
+                if avg_band_pct < 4:
+                    confidence_label = '高'
+                elif avg_band_pct < 8:
+                    confidence_label = '中'
+                else:
+                    confidence_label = '低'
+            except Exception:
+                confidence_label = '中'
+
             # 性能统计结束（在结果构建前计算）
             elapsed_ms = int((time.perf_counter() - start_time) * 1000)
+
             gpu_mem_peak = None
             try:
                 import torch
@@ -650,7 +822,7 @@ class StockPredictionService:
                 'data': {
                     'stock_info': stock_info,
                     'historical_data': self._format_historical_data(df.tail(min(lookback, len(df)))),
-                    'predictions': self._format_predictions(pred_df, y_timestamp, uncertainty_data),
+                    'predictions': self._format_predictions(pred_df, y_timestamp, uncertainty_data, raw_df=pred_df.copy() if debug else None),
                     'summary': {
                         'current_price': float(last_close),
                         'predicted_price': float(pred_close),
@@ -659,7 +831,7 @@ class StockPredictionService:
                         'trend': trend,
                         'volatility': float(volatility),
                         'prediction_days': params['pred_len'],
-                        'confidence': 'Medium',
+                        'confidence': confidence_label,
                         'elapsed_ms': elapsed_ms,
                         'gpu_mem_peak': int(gpu_mem_peak) if gpu_mem_peak is not None else None
                     },
@@ -720,6 +892,278 @@ class StockPredictionService:
                 }
 
         return results
+
+    def _get_daily_limit(self, stock_code):
+        """根据股票代码确定涨跌幅限制"""
+        if not stock_code:
+            return 0.1  # 默认10%
+
+        code_str = str(stock_code).upper()
+
+        # ST股票：±5%
+        if 'ST' in code_str or code_str.startswith('*ST'):
+            return 0.05
+
+        # 科创板：±20%
+        if code_str.startswith('688'):
+            return 0.2
+
+        # 创业板：±20% (注册制后)
+        if code_str.startswith('300'):
+            return 0.2
+
+        # 主板和中小板：±10%
+        if code_str.startswith(('000', '001', '002', '600', '601', '603', '605')):
+            return 0.1
+
+        # 默认主板限制
+        return 0.1
+
+    def _safe_price_continuity_fix(self, pred_df, last_close, stock_code=None):
+        """安全的价格连续性修复 - 只修复明显异常的跳空，并确保涨跌幅限制"""
+        try:
+            if len(pred_df) == 0 or last_close <= 0:
+                return
+
+            # 获取第一天的开盘价
+            first_open = float(pred_df.iloc[0]['open'])
+            if first_open <= 0:
+                return
+
+            # 计算跳空幅度
+            gap_percent = (first_open - last_close) / last_close * 100
+
+            # 只修复明显异常的跳空（>±5%）
+            if abs(gap_percent) > 5.0:
+                logger.info(f"检测到异常跳空: {gap_percent:.2f}%，进行安全修复")
+
+                # 计算合理的目标开盘价（限制在±3%以内）
+                max_gap = 0.03 if gap_percent > 0 else -0.03
+                target_open = last_close * (1 + max_gap)
+
+                # 计算调整因子
+                adjustment_factor = target_open / first_open
+
+                # 只调整第一天的价格，避免影响整个序列
+                pred_df.iloc[0, pred_df.columns.get_loc('open')] = target_open
+
+                # 按比例调整第一天的其他价格，保持相对关系
+                for col in ['high', 'low', 'close']:
+                    if col in pred_df.columns:
+                        original_price = float(pred_df.iloc[0][col])
+                        adjusted_price = original_price * adjustment_factor
+                        pred_df.iloc[0, pred_df.columns.get_loc(col)] = adjusted_price
+
+                # 确保OHLC关系正确
+                o = pred_df.iloc[0]['open']
+                h = pred_df.iloc[0]['high']
+                l = pred_df.iloc[0]['low']
+                c = pred_df.iloc[0]['close']
+
+                # 修正高低价
+                min_oc = min(o, c)
+                max_oc = max(o, c)
+
+                if h < max_oc:
+                    pred_df.iloc[0, pred_df.columns.get_loc('high')] = max_oc * 1.001
+                if l > min_oc:
+                    pred_df.iloc[0, pred_df.columns.get_loc('low')] = min_oc * 0.999
+
+                new_gap = (target_open - last_close) / last_close * 100
+                logger.info(f"跳空修复完成: {gap_percent:.2f}% -> {new_gap:.2f}%")
+
+            # 额外的涨跌幅检查和修复
+            self._enforce_daily_limits(pred_df, last_close, stock_code)
+
+        except Exception as e:
+            logger.warning(f"价格连续性修复失败: {e}")
+            # 不抛出异常，让预测继续
+
+    def _enforce_daily_limits(self, pred_df, initial_close, stock_code=None):
+        """强制执行A股涨跌幅限制"""
+        try:
+            prev_close = initial_close
+
+            # 根据股票代码确定涨跌幅限制
+            daily_limit = self._get_daily_limit(stock_code)
+            logger.info(f"股票{stock_code}涨跌幅限制: ±{daily_limit*100:.0f}%")
+
+            for i in range(len(pred_df)):
+
+                # 计算当日允许的价格区间
+                min_price = prev_close * (1 - daily_limit)
+                max_price = prev_close * (1 + daily_limit)
+
+                # 获取当前价格
+                o = float(pred_df.iloc[i]['open'])
+                h = float(pred_df.iloc[i]['high'])
+                l = float(pred_df.iloc[i]['low'])
+                c = float(pred_df.iloc[i]['close'])
+
+                # 检查是否超出涨跌幅限制（添加小的容差避免浮点数精度问题）
+                tolerance = 0.0001  # 0.01%的容差
+                prices = [o, h, l, c]
+                max_current = max(prices)
+                min_current = min(prices)
+
+                if max_current > (max_price + tolerance) or min_current < (min_price - tolerance):
+                    logger.warning(f"第{i+1}天价格超出涨跌幅限制，进行修正")
+                    logger.warning(f"原价格范围: {min_current:.2f} - {max_current:.2f}")
+                    logger.warning(f"允许范围: {min_price:.2f} - {max_price:.2f}")
+
+                    # 修正价格到允许范围内
+                    o_fixed = np.clip(o, min_price, max_price)
+                    h_fixed = np.clip(h, min_price, max_price)
+                    l_fixed = np.clip(l, min_price, max_price)
+                    c_fixed = np.clip(c, min_price, max_price)
+
+                    # 确保OHLC关系正确
+                    min_oc = min(o_fixed, c_fixed)
+                    max_oc = max(o_fixed, c_fixed)
+                    h_fixed = max(h_fixed, max_oc)
+                    l_fixed = min(l_fixed, min_oc)
+
+                    # 更新价格
+                    pred_df.iloc[i, pred_df.columns.get_loc('open')] = o_fixed
+                    pred_df.iloc[i, pred_df.columns.get_loc('high')] = h_fixed
+                    pred_df.iloc[i, pred_df.columns.get_loc('low')] = l_fixed
+                    pred_df.iloc[i, pred_df.columns.get_loc('close')] = c_fixed
+
+                    logger.info(f"修正后价格: O={o_fixed:.2f}, H={h_fixed:.2f}, L={l_fixed:.2f}, C={c_fixed:.2f}")
+
+                # 更新前一天收盘价
+                prev_close = float(pred_df.iloc[i]['close'])
+
+        except Exception as e:
+            logger.warning(f"涨跌幅限制执行失败: {e}")
+
+    def _simple_ohlc_fix(self, pred_df):
+        """简化的OHLC关系修复"""
+        try:
+            for i in range(len(pred_df)):
+                # 获取当天价格
+                o = float(pred_df.iloc[i]['open'])
+                h = float(pred_df.iloc[i]['high'])
+                l = float(pred_df.iloc[i]['low'])
+                c = float(pred_df.iloc[i]['close'])
+
+                # 确保基本OHLC关系
+                min_oc = min(o, c)
+                max_oc = max(o, c)
+
+                # 修复高价：必须 >= max(open, close)
+                if h < max_oc:
+                    pred_df.iloc[i, pred_df.columns.get_loc('high')] = max_oc * 1.001
+
+                # 修复低价：必须 <= min(open, close)
+                if l > min_oc:
+                    pred_df.iloc[i, pred_df.columns.get_loc('low')] = min_oc * 0.999
+
+        except Exception as e:
+            logger.warning(f"OHLC简单修复失败: {e}")
+            # 不抛出异常，让预测继续
+
+    def _fix_comprehensive_ohlc_issues(self, pred_df, last_close):
+        """全面修复OHLC关系和价格连续性问题"""
+        if len(pred_df) == 0:
+            return
+
+        logger.info("开始全面OHLC修复...")
+
+        try:
+            # 1. 修复每日的OHLC关系
+            for i in range(len(pred_df)):
+                try:
+                    open_price = float(pred_df.iloc[i]['open'])
+                    high_price = float(pred_df.iloc[i]['high'])
+                    low_price = float(pred_df.iloc[i]['low'])
+                    close_price = float(pred_df.iloc[i]['close'])
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"第{i+1}天价格数据转换失败: {e}，跳过修复")
+                    continue
+
+                # 确保价格为正数
+                if any(p <= 0 for p in [open_price, high_price, low_price, close_price]):
+                    logger.warning(f"第{i+1}天发现非正价格，跳过修复")
+                    continue
+
+                # 修复OHLC关系：确保 low <= min(open,close) <= max(open,close) <= high
+                min_oc = min(open_price, close_price)
+                max_oc = max(open_price, close_price)
+
+                # 调整高价：必须 >= max(open, close)
+                if high_price < max_oc:
+                    high_price = max_oc * 1.002  # 略高于最高的开盘/收盘价
+                    pred_df.iloc[i, pred_df.columns.get_loc('high')] = high_price
+                    logger.debug(f"第{i+1}天调整高价: {pred_df.iloc[i]['high']:.2f} -> {high_price:.2f}")
+
+                # 调整低价：必须 <= min(open, close)
+                if low_price > min_oc:
+                    low_price = min_oc * 0.998  # 略低于最低的开盘/收盘价
+                    pred_df.iloc[i, pred_df.columns.get_loc('low')] = low_price
+                    logger.debug(f"第{i+1}天调整低价: {pred_df.iloc[i]['low']:.2f} -> {low_price:.2f}")
+
+                # 限制日内波动幅度（不超过15%）
+                if open_price > 0:  # 确保开盘价为正数
+                    daily_range = (high_price - low_price) / open_price
+                    if daily_range > 0.15:  # 超过15%日内波动
+                        # 压缩高低价范围
+                        mid_price = (high_price + low_price) / 2
+                        max_range = open_price * 0.15
+                        new_high = mid_price + max_range / 2
+                        new_low = mid_price - max_range / 2
+
+                        # 确保仍然满足OHLC关系
+                        new_high = max(new_high, max_oc)
+                        new_low = min(new_low, min_oc)
+
+                        pred_df.iloc[i, pred_df.columns.get_loc('high')] = new_high
+                        pred_df.iloc[i, pred_df.columns.get_loc('low')] = new_low
+                        logger.debug(f"第{i+1}天压缩日内波动: {daily_range:.1%} -> {(new_high-new_low)/open_price:.1%}")
+
+            # 2. 修复日间连续性
+            prev_close = last_close
+            for i in range(len(pred_df)):
+                current_open = pred_df.iloc[i]['open']
+
+                # 确保前一天收盘价为正数
+                if prev_close <= 0:
+                    logger.warning(f"第{i+1}天前一天收盘价异常: {prev_close}，跳过连续性修复")
+                    prev_close = pred_df.iloc[i]['close']
+                    continue
+
+                gap_percent = (current_open - prev_close) / prev_close * 100
+
+                # 如果跳空超过±8%，进行调整
+                if abs(gap_percent) > 8.0:
+                    # 限制跳空在±5%以内
+                    max_gap = 0.05 if gap_percent > 0 else -0.05
+                    target_open = prev_close * (1 + max_gap)
+
+                    # 确保当前开盘价为正数
+                    if current_open <= 0:
+                        logger.warning(f"第{i+1}天开盘价异常: {current_open}，跳过调整")
+                        prev_close = pred_df.iloc[i]['close']
+                        continue
+
+                    adjustment_factor = target_open / current_open
+
+                    # 调整当天的所有价格
+                    for col in ['open', 'high', 'low', 'close']:
+                        pred_df.iloc[i, pred_df.columns.get_loc(col)] *= adjustment_factor
+
+                    logger.info(f"第{i+1}天跳空调整: {gap_percent:.1f}% -> {max_gap*100:.1f}%")
+
+                prev_close = pred_df.iloc[i]['close']
+
+            logger.info("全面OHLC修复完成")
+
+        except Exception as e:
+            logger.error(f"OHLC修复过程中发生错误: {str(e)}")
+            logger.error(f"错误类型: {type(e).__name__}")
+            import traceback
+            logger.error(f"错误堆栈: {traceback.format_exc()}")
+            # 不重新抛出异常，让预测继续进行
 
 
 # 全局预测服务实例
@@ -823,45 +1267,99 @@ class RealKronosPredictor:
         recent_volumes = historical_data[-30:, 4]  # volumes
 
         # 计算趋势和波动性
-        price_trend = np.mean(np.diff(recent_prices[-10:]))
-        price_volatility = np.std(recent_prices) / np.mean(recent_prices)
+        price_changes = np.diff(recent_prices[-10:])
+
+        # 检测并过滤异常涨跌（超过±8%的单日变化）
+        normal_changes = price_changes[np.abs(price_changes / recent_prices[-10:-1]) <= 0.08]
+
+        if len(normal_changes) > 0:
+            price_trend = np.mean(normal_changes)
+            price_volatility = np.std(normal_changes) / np.mean(recent_prices[-10:])
+        else:
+            # 如果所有变化都是异常的，使用更保守的估计
+            price_trend = 0
+            price_volatility = 0.02
+
+        # 限制波动率，避免过度波动
+        price_volatility = min(price_volatility, 0.03)  # 最大3%的日波动率
+
+        # 检测最近是否有异常涨跌，如果有则减弱趋势延续性
+        last_change = recent_prices[-1] - recent_prices[-2] if len(recent_prices) >= 2 else 0
+        last_change_pct = last_change / recent_prices[-2] if len(recent_prices) >= 2 and recent_prices[-2] > 0 else 0
+
+        # 如果最后一天涨跌幅超过5%，认为是异常，减弱趋势
+        if abs(last_change_pct) > 0.05:
+            price_trend *= 0.3  # 大幅减弱异常趋势的延续性
+            print(f"检测到异常涨跌: {last_change_pct:.2%}，减弱趋势延续性")
 
         # 生成更真实的预测
         predictions = []
-        last_price = recent_prices[-1]
+        last_close = recent_prices[-1]  # 前一天收盘价
         last_volume = recent_volumes[-1]
 
         for i in range(pred_len):
             # 趋势衰减
             trend_factor = max(0.1, 1 - i * 0.1)
 
-            # 价格预测
-            price_change = price_trend * trend_factor + np.random.normal(0, price_volatility * last_price * 0.01)
-            new_price = max(last_price * 0.9, last_price + price_change)
+            # 第一天开盘价应该接近前一天收盘价，后续天数开盘价接近前一天收盘价
+            if i == 0:
+                # 第一天：开盘价基于前一天收盘价，加入小幅跳空（通常在±2%以内）
+                gap_factor = np.random.normal(0, 0.01)  # 1%的跳空标准差
+                gap_factor = np.clip(gap_factor, -0.02, 0.02)  # 限制在±2%以内
+                open_price = last_close * (1 + gap_factor)
+            else:
+                # 后续天数：开盘价接近前一天收盘价，允许小幅跳空
+                gap_factor = np.random.normal(0, 0.005)  # 0.5%的跳空标准差
+                gap_factor = np.clip(gap_factor, -0.015, 0.015)  # 限制在±1.5%以内
+                open_price = last_close * (1 + gap_factor)
 
-            # 生成OHLC
-            volatility = price_volatility * new_price * 0.02
-            high = new_price + abs(np.random.normal(0, volatility))
-            low = new_price - abs(np.random.normal(0, volatility))
-            open_price = last_price + np.random.normal(0, volatility * 0.5)
+            # 基于开盘价和趋势计算收盘价
+            price_change = price_trend * trend_factor + np.random.normal(0, price_volatility * open_price * 0.5)
+            close_price = open_price + price_change
+
+            # 确保收盘价不会偏离开盘价太远（日内波动限制）
+            max_daily_change = open_price * 0.1  # 最大10%的日内波动
+            close_price = np.clip(close_price,
+                                open_price - max_daily_change,
+                                open_price + max_daily_change)
+
+            # 确保价格为正
+            close_price = max(close_price, open_price * 0.5)
+
+            # 生成高低价：确保 low <= open,close <= high
+            base_volatility = price_volatility * open_price * 0.3  # 减小日内波动
+
+            # 高价：在开盘价和收盘价的最大值基础上增加
+            high_base = max(open_price, close_price)
+            high_price = high_base + abs(np.random.normal(0, base_volatility))
+
+            # 低价：在开盘价和收盘价的最小值基础上减少
+            low_base = min(open_price, close_price)
+            low_price = low_base - abs(np.random.normal(0, base_volatility))
+
+            # 确保价格关系正确：low <= min(open,close) <= max(open,close) <= high
+            low_price = max(low_price, low_base * 0.95)  # 低价不能太低
+            high_price = min(high_price, high_base * 1.05)  # 高价不能太高
 
             # 成交量预测
-            volume_change = np.random.normal(0, 0.2)
-            new_volume = max(last_volume * 0.5, last_volume * (1 + volume_change))
+            volume_change = np.random.normal(0, 0.15)  # 减小成交量波动
+            new_volume = max(last_volume * 0.7, last_volume * (1 + volume_change))
 
             # 成交额
-            amount = new_price * new_volume
+            avg_price = (open_price + high_price + low_price + close_price) / 4
+            amount = avg_price * new_volume
 
             predictions.append({
                 'open': float(open_price),
-                'high': float(high),
-                'low': float(low),
-                'close': float(new_price),
+                'high': float(high_price),
+                'low': float(low_price),
+                'close': float(close_price),
                 'volume': int(new_volume),
                 'amount': float(amount)
             })
 
-            last_price = new_price
+            # 更新为下一天的基准
+            last_close = close_price
             last_volume = new_volume
 
         return predictions

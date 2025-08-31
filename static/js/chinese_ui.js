@@ -78,21 +78,27 @@ const chineseTranslations = {
     'Custom range': '自定义范围'
 };
 
-// 工具栏中文化函数（支持 iframe 内的 Plotly 图表）
+// 工具栏中文化函数（支持 iframe 及父文档中的 Plotly 图表）
 function translateToolbar() {
     const tooltipMap = {
+        // 常见按钮
         'Pan': '平移',
         'Box Zoom': '框选缩放',
+        'Zoom': '缩放',
         'Zoom in': '放大',
         'Zoom out': '缩小',
+        'Zoom 2D': '缩放',
+        'Lasso Select': '套索选择',
         'Autoscale': '自适应',
         'Reset axes': '重置',
-        'Download plot as a png': '保存图片'
+        'Download plot as a png': '保存图片',
+        'Download plot as png': '保存图片'
     };
 
     function applyInDocument(doc) {
         let translated = 0;
-        const nodes = doc.querySelectorAll('.modebar-btn, [data-title]');
+        if (!doc) return translated;
+        const nodes = doc.querySelectorAll('.modebar-btn, [data-title], [title], [aria-label]');
         nodes.forEach(btn => {
             const key = btn.getAttribute('data-title') || btn.getAttribute('title') || btn.getAttribute('aria-label');
             if (key && tooltipMap[key]) {
@@ -106,29 +112,34 @@ function translateToolbar() {
         return translated;
     }
 
-    // 应用于当前文档
-    let total = applyInDocument(document);
+    let total = 0;
 
-    // 同时尝试应用到所有 iframe 内部（Plotly 通常渲染在 iframe 内）
-    const iframes = Array.from(document.querySelectorAll('iframe'));
-    iframes.forEach(iframe => {
-        try {
-            const idoc = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document);
-            if (idoc) {
-                total += applyInDocument(idoc);
-                // 监听 iframe 内部的变化，自动重写标题
-                const observer = new MutationObserver(() => setTimeout(() => applyInDocument(idoc), 50));
-                observer.observe(idoc.body || idoc, { childList: true, subtree: true });
+    // 当前文档与父文档（组件运行在 iframe 时可作用到父文档）
+    const docs = [document];
+    try { if (parent && parent.document) docs.push(parent.document); } catch (e) {}
+
+    docs.forEach(doc => {
+        total += applyInDocument(doc);
+        // 同时尝试作用到该文档内的所有 iframe
+        const iframes = Array.from(doc.querySelectorAll('iframe'));
+        iframes.forEach(iframe => {
+            try {
+                const idoc = iframe.contentDocument || (iframe.contentWindow && iframe.contentWindow.document);
+                if (idoc) {
+                    total += applyInDocument(idoc);
+                    const observer = new MutationObserver(() => setTimeout(() => applyInDocument(idoc), 50));
+                    observer.observe(idoc.body || idoc, { childList: true, subtree: true });
+                }
+            } catch (e) {
+                // 跨域或沙箱限制的 iframe 可能无法访问，忽略
             }
-        } catch (e) {
-            // 某些跨域或沙箱限制的 iframe 可能无法访问，忽略
-        }
+        });
     });
 
     console.log(`🔧 工具栏中文化: 总计翻译 ${total} 个按钮`);
     return total;
 }
-// 每隔 1 秒强制翻译一次，确保动态渲染后仍为中文
+// 每隔 1 秒尝试翻译一次，确保动态渲染后仍为中文
 setInterval(translateToolbar, 1000);
 
 

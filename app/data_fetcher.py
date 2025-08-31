@@ -124,8 +124,8 @@ class AStockDataFetcher:
                 '成交额': 'amount'
             })
 
-            # 确保日期列为datetime类型
-            df['date'] = pd.to_datetime(df['date'])
+            # 确保日期列为datetime类型（统一为无时区，避免 tz-naive/aware 比较错误）
+            df['date'] = pd.to_datetime(df['date'], utc=False).dt.tz_localize(None)
             df = df.set_index('date')
 
             # 选择需要的列
@@ -209,10 +209,10 @@ class AStockDataFetcher:
             cols = list(raw.columns)
             # 日期列兼容
             if 'date' in cols:
-                raw['date'] = pd.to_datetime(raw['date'], errors='coerce')
+                raw['date'] = pd.to_datetime(raw['date'], errors='coerce', utc=False).dt.tz_localize(None)
             elif '日期' in cols:
                 raw.rename(columns={'日期': 'date'}, inplace=True)
-                raw['date'] = pd.to_datetime(raw['date'], errors='coerce')
+                raw['date'] = pd.to_datetime(raw['date'], errors='coerce', utc=False).dt.tz_localize(None)
             else:
                 raise ValueError('cache missing date column')
             # 其余列兼容
@@ -276,7 +276,7 @@ class AStockDataFetcher:
                     inc = inc.rename(columns={
                         '日期': 'date', '开盘': 'open', '收盘': 'close', '最高': 'high', '最低': 'low', '成交量': 'volume', '成交额': 'amount'
                     })
-                    inc['date'] = pd.to_datetime(inc['date'])
+                    inc['date'] = pd.to_datetime(inc['date'], utc=False).dt.tz_localize(None)
                     inc = inc.set_index('date')
                     for c in ['open','high','low','close','volume']:
                         inc[c] = pd.to_numeric(inc[c], errors='coerce')
@@ -359,7 +359,7 @@ class AStockDataFetcher:
                     else:
                         out[c] = np.nan
             out = out[cols]
-            out['date'] = pd.to_datetime(out['date']).dt.strftime('%Y-%m-%d')
+            out['date'] = pd.to_datetime(out['date'], utc=False).dt.tz_localize(None).dt.strftime('%Y-%m-%d')
             out.to_csv(path, index=False)
 
             self.cache_written = True
@@ -384,7 +384,7 @@ class AStockDataFetcher:
                 break
         if not last_str:
             return False
-        last_dt = pd.to_datetime(last_str, errors='coerce')
+        last_dt = pd.to_datetime(last_str, errors='coerce', utc=False).tz_localize(None)
         if pd.isna(last_dt):
             return False
         # 计算最近一个交易日（东八区）
