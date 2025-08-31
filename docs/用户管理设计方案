@@ -1,0 +1,256 @@
+I'll first look up the project's current stack and whether any authentication or user-related code already exists so the design fits your architecture.
+
+## 目标与范围
+
+- 目标：为现有 FastAPI + Streamlit 应用提供一个“轻量、独立、稳定”的用户管理模块，支持注册/登录、权限控制、收藏与历史记录、审计日志，并能在 Windows 本地开发与 Docker 部署间保持一致。
+- 约束与原则：
+  - 轻量模块化，尽量减少对现有代码侵入；避免重复功能与冗余实现
+  - 外部数据与持久化统一放在 volumes 目录
+  - 开发/测试依赖安装在根目录 .venv
+  - 提供 Debug 开关与结构化日志输出
+  - 修改后需有测试用例（tests/），并自测通过
+  - 最终上线运行于 Docker，配置通过环境变量控制
+
+---
+
+## 架构总览
+
+- 身份认证与会话
+  - 后端：FastAPI 原生依赖系统 + OAuth2 Password flow + JWT（访问令牌）+ 刷新令牌
+  - 密码哈希：passlib[bcrypt]
+  - 访问令牌（短时，15–30min）存放在客户端（Streamlit）会话状态；刷新令牌（较长，7–30天）通过 HttpOnly Cookie（若走浏览器）或服务端会话（若由 Streamlit 服务器端代发请求）
+  - Token 失效策略：刷新令牌轮换 + 黑名单（存储在 DB，记录已吊销或已使用的 refresh token jti）
+- 权限控制
+  - 角色：user、admin（后续可扩展为 RBAC）
+  - FastAPI 依赖项 get_current_user + role_required 装饰器
+- 数据持久化
+  - ORM：SQLModel（或 SQLAlchemy + Pydantic）
+  - 默认 SQLite（volumes/data/auth.db）用于本地与小型部署；可通过环境变量切换 PostgreSQL
+- 前端集成（Streamlit）
+  - 在侧边栏提供登录/注册组件
+  - 将 access_token 存放于 st.session_state，用于调用 FastAPI
+  - 隐藏受限内容（未登录不可见），登录状态变化触发界面刷新
+- 日志与 Debug
+  - 统一使用标准 logging + 结构化输出（JSON 可选）
+  - 增加 DEBUG_AUTH 与 LOG_FORMAT 环境变量；日志写入 volumes/logs/
+- 部署
+  - Docker 中挂载 volumes/data、volumes/logs
+  - Nginx 处理 TLS（生产）与路径代理
+
+---
+
+## 数据模型（ER 概览）
+
+- User
+  - id (UUID/Int), username, email, password_hash, role, is_active, created_at, updated_at
+- RefreshToken
+  - id, user_id, jti, expires_at, revoked (bool), created_at
+- UserAuditLog
+  - id, user_id, action, ip, user_agent, created_at, metadata(JSON)
+- UserFavorite
+  - id, user_id, stock_code, note, created_at
+- PredictionHistory
+  - id, user_id, stock_code, request_params(JSON), result_meta(JSON), created_at
+
+存储位置：
+- SQLite 文件路径：volumes/data/auth.db
+- 审计与应用日志：volumes/logs/*.log
+
+---
+
+## API 设计（FastAPI 路由）
+
+- /auth/register [POST]
+  - 入参：username, email, password
+  - 出参：basic user info
+  - 校验：用户名/邮箱唯一性；密码复杂度
+- /auth/login [POST]
+  - 入参：username_or_email, password
+  - 出参：access_token（JWT, Bearer）、refresh_token（HttpOnly Cookie 或 JSON）
+  - 审计：成功/失败登录记录
+- /auth/refresh [POST]
+  - 入参：refresh_token（HttpOnly Cookie 或 JSON）
+  - 出参：新的 access_token（与新的刷新令牌，轮换策略）
+  - 校验：refresh jti 是否有效或被吊销
+- /auth/logout [POST]
+  - 动作：将当前刷新令牌标记为 revoked，清除 HttpOnly Cookie
+- /users/me [GET]
+  - 需要登录；返回当前用户信息与角色
+- /users [GET, admin]
+  - 支持分页/查询用户列表
+- /users/{id} [GET/PUT/DELETE, admin]
+  - 管理用户，禁用账号等
+- /favorites [GET/POST/DELETE]
+  - 获取/新增/删除收藏的股票代码
+- /history [GET]
+  - 获取个人调用预测历史记录（与现有 /predict 关联）
+- 对现有业务接口加保护
+  - /predict, /predict/batch, /stocks/... 可设置为“登录可享更高频率”与“匿名限流”
+  - 对于免费匿名调用：提供全局速率限制（如 SlowAPI）
+
+请求/响应规范：
+- 统一返回 success, data, error, timestamp
+- 错误码与异常处理复用现有 app/api.py 的统一处理器
+
+---
+
+## 安全与合规
+
+- 密码：bcrypt 哈希 + 唯一用户名/邮箱校验
+- JWT：签名算法 HS256；私密密钥 JWT_SECRET 使用环境变量管理
+- 刷新令牌：轮换，持久化 jti，支持注销/吊销
+- CSRF：
+  - 如果使用 HttpOnly Cookie 方案（浏览器端），配合 SameSite=Lax/Strict 与 CSRF Token 双重防护
+  - 如果由 Streamlit 服务器端代发请求（常见），令牌不进入浏览器，CSRF 风险低，注意保护 Streamlit 会话
+- CORS：从 allow_origins=["*"] 收紧为配置化白名单
+- 速率限制：登录/注册接口严格限流，预测匿名接口更低阈值限流
+- 审计：登录成功/失败、敏感操作写入 UserAuditLog
+
+---
+
+## 配置与环境变量
+
+- 必需
+  - JWT_SECRET=...
+  - ACCESS_TOKEN_EXPIRE_MINUTES=30
+  - REFRESH_TOKEN_EXPIRE_DAYS=7
+  - AUTH_DB_URL=sqlite:///volumes/data/auth.db（默认，可切换 PostgreSQL）
+- 可选
+  - DEBUG_AUTH=true/false
+  - LOG_LEVEL=INFO/DEBUG
+  - LOG_FORMAT=text/json
+  - ALLOWED_ORIGINS=http://localhost,http://your-domain
+
+---
+
+## 目录与模块划分（轻量可插拔）
+
+- app/auth/
+  - models.py（User, RefreshToken, UserFavorite, PredictionHistory, UserAuditLog）
+  - schemas.py（Pydantic 请求/响应模型）
+  - security.py（hash_password, verify_password, create_access_token, create_refresh_token, decode, jti 生成）
+  - dependencies.py（get_db, get_current_user, role_required）
+  - router_auth.py（/auth 路由）
+  - router_user.py（/users 路由）
+  - router_profile.py（/favorites, /history）
+  - rate_limit.py（可选 SlowAPI 集成）
+  - logging.py（模块化日志封装，尊重 LOG_LEVEL/FORMAT）
+- 集成点
+  - app/api.py 中 include_router，并将受保护的业务路由加上依赖
+  - prediction_service 调用处写入 PredictionHistory（异步/后台任务）
+
+---
+
+## 与现有功能的耦合点
+
+- 保持现有 API 不变的前提下，新增“可选保护与限流”：
+  - 匿名用户：可健康检查与有限预测调用
+  - 登录用户：更高限额、可收藏与查看历史
+- Streamlit 前端增加：
+  - 登录/注册 UI（侧边栏）
+  - 使用 st.session_state["access_token"] 透传到调用 FastAPI 的 headers
+  - 登录状态下显示收藏/历史模块
+
+---
+
+## 日志与 Debug
+
+- 统一 logging 配置到 volumes/logs/app.log（或 auth.log）
+- Debug 开关：DEBUG_AUTH=true 时增加
+  - 登录流程详细日志（不记录敏感信息）
+  - 请求追踪 ID（correlation id）
+- 生产默认 INFO，日志格式可选 JSON
+
+---
+
+## 测试方案（tests/）
+
+- 单元测试（tests/unit/）
+  - 密码哈希与验证
+  - JWT 生成/解析/过期
+  - 刷新令牌轮换与吊销逻辑
+- 集成测试（tests/integration/）
+  - 注册→登录→刷新→注销完整流程
+  - 访问受保护的 /users/me 成功/失败
+  - 收藏与历史记录的增删查
+- 性能/安全（tests/performance/, tests/security/）
+  - 基础速率限制验证
+  - 异常路径（错误密码、多次失败登录）
+- 测试数据使用 volumes/ 下的临时数据库文件，测试启动前后清理
+
+---
+
+## 部署与运维
+
+- Docker
+  - 镜像中包含 auth 模块代码
+  - docker-compose 映射 volumes/data 与 volumes/logs
+- Nginx
+  - TLS 终端，转发 /api 到 FastAPI
+  - 可选：对 /auth/* 路径增加速率限制
+- 迁移
+  - 初期 SQLite 无需复杂迁移；如采用 SQLModel，可加入轻量 Alembic 迁移流程（可选）
+- 监控与审计
+  - 汇总登录失败告警阈值
+  - 统计活跃用户与调用量
+
+---
+
+## 迭代路线图
+
+1. M1 最小可用
+   - 基础模型与 DB（User、RefreshToken）
+   - /auth/register、/auth/login、/auth/refresh、/users/me
+   - 保护 /predict（登录可享更高限额）
+   - Streamlit 登录 UI
+   - 单元/集成测试
+2. M2 用户价值
+   - 收藏（/favorites）与历史（/history）
+   - 审计日志
+   - 限流策略（匿名/登录区分）
+3. M3 安全与管理
+   - Admin 路由与简单用户管理
+   - CORS 白名单、日志 JSON、Nginx 限流
+4. M4 增强
+   - 2FA（TOTP）
+   - OIDC/企业 SSO（可选）
+
+---
+
+## 开发与自测清单（贴合你的偏好）
+
+- Windows 下开发与测试，创建 .venv，安装依赖到 .venv
+- 外部数据与持久化放 volumes
+- 所有测试脚本放 tests/
+- 增加 DEBUG_AUTH、LOG_LEVEL、LOG_FORMAT 等配置
+- 修改后先本地运行测试、再通知结果
+- 避免冗余与重复实现（复用依赖与装饰器）
+
+---
+
+## 开放问题（请确认）
+
+- 账号体系：是否必须邮箱唯一？是否需要邮箱验证或短信验证？
+- 是否需要第三方登录（企业内部 OIDC/微信/钉钉）？
+- 匿名用户的免费限额策略（每天几次？是否按 IP）？
+- 管理后台是否放在 Streamlit 中实现简单页面，还是单独管理端？
+- 数据库：是否接受默认 SQLite，未来是否会切 PostgreSQL？
+
+---
+
+## 建议的下一步
+
+- 我可以将上述内容落地为 docs/user-management-design.md，并给出最小骨架代码（app/auth/*）与初始测试（tests/unit, tests/integration）。请确认：
+  1) 是否采用 JWT + 刷新令牌的方案？
+  2) 初期使用 SQLite 存在 volumes/data/auth.db 是否可行？
+  3) 是否需要邮箱验证与第三方登录（若需要会影响 M1 范围）？
+
+一旦确认，我会：
+- 生成文档到 docs/
+- 添加最小骨架代码与配置，不引入冗余
+- 编写并运行基础测试，确保自测通过后再反馈结果
+
+—
+
+[/] 当前任务：Design user management module
+- 状态：设计方案已完成，待你确认关键选型（JWT/DB/登录方式）后进入实现与测试阶段。

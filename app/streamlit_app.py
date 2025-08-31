@@ -736,7 +736,11 @@ def render_stock_prediction_content():
             r = requests.post(f"{api_base}/refresh/{stock_code}", params={"period": period}, timeout=30)
             if r.status_code == 200 and r.json().get('success'):
                 info = r.json()['data']
-                st.sidebar.success(f"已更新: {info['last_date']} 来源: {info['source']} 条数: {info.get('rows','-')}")
+                rows_added = info.get('rows_added')
+                if isinstance(rows_added, int) and rows_added > 0:
+                    st.sidebar.success(f"已更新至 {info['last_date']}，新增 {rows_added} 行（来源: {info['source']}）")
+                else:
+                    st.sidebar.info(f"缓存已最新（{info['last_date']}），来源: {info['source']}")
                 # 自动触发一次预测
                 st.session_state['auto_trigger_predict'] = True
                 st.experimental_rerun()

@@ -82,7 +82,8 @@ services:
       - ./volumes/data:/app/data
       - ./volumes/models:/app/models
       - ./volumes/logs:/app/logs
-    command: python download_5year_data.py
+      - ./scripts:/app/scripts
+    command: python scripts/data/download_5year_data.py
     restart: "no"  # 只运行一次
     networks:
       - kronos-internal

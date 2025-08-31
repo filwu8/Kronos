@@ -837,9 +837,9 @@ class StockPredictionService:
                     },
                     'metadata': {
                         'prediction_time': datetime.now().isoformat(),
-                        'data_source': getattr(self.data_fetcher, 'last_source', 'unknown'),
+                        'data_source': getattr(self.data_fetcher, 'last_refresh_source', getattr(self.data_fetcher, 'last_source', 'unknown')),
                         'cache_status': getattr(self.data_fetcher, 'last_cache_status', 'unknown'),
-                        'cache_written': getattr(self.data_fetcher, 'cache_written', False),
+                        'cache_written': getattr(self.data_fetcher, 'last_refresh_written', getattr(self.data_fetcher, 'cache_written', False)),
                         'model_version': 'Kronos-small',
                         'use_mock': self.use_mock
                     }

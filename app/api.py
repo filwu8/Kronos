@@ -13,9 +13,22 @@ import os
 
 from .prediction_service import get_prediction_service
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
+# 配置日志（支持环境变量 LOG_LEVEL；可选落盘到 volumes/logs/api_server.log）
+log_level = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(level=getattr(logging, log_level, logging.INFO))
 logger = logging.getLogger(__name__)
+
+try:
+    from pathlib import Path
+    log_dir = Path("volumes") / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    fh = logging.FileHandler(log_dir / "api_server.log", encoding="utf-8")
+    fh.setLevel(getattr(logging, log_level, logging.INFO))
+    fmt = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+except Exception:
+    pass
 
 # 创建FastAPI应用
 app = FastAPI(

@@ -74,21 +74,28 @@ def main():
         print("请运行: pip install -r app/requirements.txt")
         return 1
     
-    # 创建日志目录
-    log_dir = Path("logs")
-    log_dir.mkdir(exist_ok=True)
-    
+    # 创建日志目录（统一到 volumes/logs）
+    log_dir = Path("volumes") / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    # 调试/日志配置
+    APP_DEBUG = os.getenv('APP_DEBUG', '0').lower() in ('1', 'true', 'yes', 'y')
+    LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO').lower()
+
     # 设置环境变量
     os.environ['PYTHONPATH'] = str(Path.cwd())
     os.environ['USE_MOCK_MODEL'] = 'true'
     os.environ['DEVICE'] = 'cpu'
-    
+    os.environ['APP_DEBUG'] = '1' if APP_DEBUG else '0'
+    os.environ['LOG_LEVEL'] = LOG_LEVEL.upper()
+
     processes = []
-    
+
     try:
         # 启动API服务
-        api_cmd = "python -m uvicorn app.api:app --host 0.0.0.0 --port 8000 --reload"
-        api_process = run_command(api_cmd, "API服务", "logs/api.log")
+        reload_flag = "--reload" if APP_DEBUG else ""
+        api_cmd = f"python -m uvicorn app.api:app --host 0.0.0.0 --port 8000 {reload_flag} --log-level {LOG_LEVEL}"
+        api_process = run_command(api_cmd, "API服务", str(log_dir / "api.log"))
         processes.append(("API", api_process))
         
         # 等待API启动
@@ -97,8 +104,8 @@ def main():
             return 1
         
         # 启动前端服务
-        frontend_cmd = "python -m streamlit run app/streamlit_app.py --server.address 0.0.0.0 --server.port 8501"
-        frontend_process = run_command(frontend_cmd, "前端服务", "logs/frontend.log")
+        frontend_cmd = f"python -m streamlit run app/streamlit_app.py --server.address 0.0.0.0 --server.port 8501 --logger.level={LOG_LEVEL.upper()}"
+        frontend_process = run_command(frontend_cmd, "前端服务", str(log_dir / "frontend.log"))
         processes.append(("前端", frontend_process))
         
         # 等待前端启动

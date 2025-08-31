@@ -31,6 +31,10 @@ class AStockDataFetcher:
         self.last_source: Optional[str] = None  # 'cache'|'akshare'|'yfinance'
         self.last_cache_status: Optional[str] = None  # 'hit'|'miss'|'stale'
         self.cache_written: bool = False
+        # 最近一次刷新动作信息（供前端展示刷新来源与是否写入）
+        self.last_refresh_source: Optional[str] = None  # 'akshare'|'yfinance'|'cache'|'unknown'
+        self.last_refresh_written: bool = False
+        self.last_refresh_time: Optional[datetime] = None
 
     def normalize_stock_code(self, stock_code: str) -> Tuple[str, str]:
         """
@@ -174,6 +178,10 @@ class AStockDataFetcher:
                 logger.warning(f"yfinance未获取到数据: {stock_code}")
                 return None
 
+            # 统一索引为无时区（tz-naive），避免与 akshare/缓存比较时报 tz 冲突
+            if isinstance(df.index, pd.DatetimeIndex) and getattr(df.index, 'tz', None) is not None:
+                df.index = df.index.tz_localize(None)
+
             # 标准化列名
             df.columns = df.columns.str.lower()
             df = df.rename(columns={'adj close': 'adj_close'})
@@ -248,6 +256,9 @@ class AStockDataFetcher:
         # 先尝试读取旧缓存
         old = self._load_from_cache(stock_code)
         if old is not None and len(old) > 0:
+            # 统一旧数据索引为 tz-naive，避免与后续增量数据比较时报 tz 冲突
+            if isinstance(old.index, pd.DatetimeIndex) and getattr(old.index, 'tz', None) is not None:
+                old.index = old.index.tz_localize(None)
             # 计算增量起始日期
             last_dt = pd.Timestamp(old.index.max()).normalize()
             start_dt = (last_dt + pd.Timedelta(days=1))
@@ -298,6 +309,9 @@ class AStockDataFetcher:
                     ticker = yf.Ticker(y_code)
                     ydf = ticker.history(start=start_dt.strftime('%Y-%m-%d'))
                     if ydf is not None and not ydf.empty:
+                        # 统一索引为无时区（tz-naive）
+                        if isinstance(ydf.index, pd.DatetimeIndex) and getattr(ydf.index, 'tz', None) is not None:
+                            ydf.index = ydf.index.tz_localize(None)
                         ydf.columns = ydf.columns.str.lower()
                         if 'amount' not in ydf.columns:
                             ydf['amount'] = ydf['close'] * ydf['volume']
@@ -309,21 +323,36 @@ class AStockDataFetcher:
 
             # 合并并写缓存
             merged = old
+            $added_count_placeholder
             if inc is not None and len(inc) > 0:
+                added_count = int(len(inc))
                 merged = pd.concat([old[~old.index.isin(inc.index)], inc]).sort_index()
                 self._save_to_cache(stock_code, merged)
                 self.last_source = src or 'unknown'
                 self.last_cache_status = 'written'
+                # 记录刷新信息
+                self.last_refresh_source = self.last_source
+                self.last_refresh_written = True
+                self.last_refresh_time = datetime.now()
             else:
+                added_count = 0
                 # 没有可用增量，保持原样
                 self.last_source = 'cache'
                 self.last_cache_status = 'hit'
+                # 记录刷新信息（无写入）
+                self.last_refresh_source = self.last_source
+                self.last_refresh_written = False
+                self.last_refresh_time = datetime.now()
 
+            # 确保合并后的索引为 tz-naive
+            if isinstance(merged.index, pd.DatetimeIndex) and getattr(merged.index, 'tz', None) is not None:
+                merged.index = merged.index.tz_localize(None)
             final_last = pd.Timestamp(merged.index.max())
             return {
                 'source': self.last_source,
                 'last_date': final_last.strftime('%Y-%m-%d'),
-                'rows': int(len(merged))
+                'rows': int(len(merged)),
+                'rows_added': int(added_count)
             }
 
         # 若无旧缓存：按 period 获取并写入（内部已做合并与写入）
@@ -332,6 +361,9 @@ class AStockDataFetcher:
             return None
         # fetch_stock_data 已保存缓存并设置 last_source
         self.last_cache_status = 'written'
+        # 确保新数据索引为 tz-naive
+        if isinstance(df.index, pd.DatetimeIndex) and getattr(df.index, 'tz', None) is not None:
+            df.index = df.index.tz_localize(None)
         last_dt = pd.Timestamp(df.index.max())
         return {
             'source': getattr(self, 'last_source', 'unknown'),
@@ -410,8 +442,7 @@ class AStockDataFetcher:
             DataFrame: 股票数据
         """
         logger.info(f"开始获取股票数据: {stock_code}")
-        self.last_source = None
-        self.cache_written = False
+        # 不在此处重置 last_source/cache_written，以便在刷新后的一次预测中保留“已写入”状态
 
         # 1) 优先读缓存（新鲜缓存直接返回）
         if self._is_cache_fresh(stock_code):
