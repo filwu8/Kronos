@@ -261,24 +261,54 @@ class StockPredictionService:
             # 使用传入的y_timestamp作为日期
             prediction_date = y_timestamp.iloc[i] if i < len(y_timestamp) else y_timestamp.iloc[-1]
 
+            # 规范化与一致性修复
+            o = float(pd.to_numeric(row.get('open'), errors='coerce'))
+            h = float(pd.to_numeric(row.get('high'), errors='coerce'))
+            l = float(pd.to_numeric(row.get('low'), errors='coerce'))
+            c = float(pd.to_numeric(row.get('close'), errors='coerce'))
+            v = float(pd.to_numeric(row.get('volume'), errors='coerce')) if 'volume' in row else 0.0
+            amt = float(pd.to_numeric(row.get('amount'), errors='coerce')) if 'amount' in row else float(c * v)
+            max_oc = max(o, c); min_oc = min(o, c)
+            if not np.isfinite(h) or h < max_oc: h = max_oc
+            if not np.isfinite(l) or l > min_oc: l = min_oc
+
             prediction_item = {
                 'date': prediction_date.strftime('%Y-%m-%d'),
-                'open': float(row['open']),
-                'high': float(row['high']),
-                'low': float(row['low']),
-                'close': float(row['close']),
-                'volume': int(row['volume']),
-                'amount': float(row['amount']) if 'amount' in row else float(row['close'] * row['volume'])
+                'open': float(o),
+                'high': float(h),
+                'low': float(l),
+                'close': float(c),
+                'volume': int(max(0, round(v))),
+                'amount': float(max(0.0, amt))
             }
 
-            # 添加不确定性信息
+            # 添加不确定性信息并施加约束
             if uncertainty_data is not None and i < len(uncertainty_data['upper']):
+                up = float(uncertainty_data['upper'][i])
+                lo = float(uncertainty_data['lower'][i])
+                mx = float(uncertainty_data['max'][i])
+                mn = float(uncertainty_data['min'][i])
+                sd = float(uncertainty_data['std'][i])
+                if up < lo: up, lo = lo, up
+                # 先将上/下界拉回到以收盘为中心的、至少包含收盘价的范围
+                # 若下界高于收盘，则将下界压至收盘；若上界低于收盘，则将上界抬至收盘
+                if lo > c: lo = c
+                if up < c: up = c
+                # max/min 也需与上下界一致
+                if mx < up or not np.isfinite(mx): mx = up
+                if mn > lo or not np.isfinite(mn): mn = lo
+                # 防止边界完全相等导致展示误读，留出最小间隙
+                eps = 1e-6
+                if up - lo < eps:
+                    up = c + eps
+                    lo = c - eps
+                    mx = up; mn = lo
                 prediction_item.update({
-                    'close_upper': float(uncertainty_data['upper'][i]),
-                    'close_lower': float(uncertainty_data['lower'][i]),
-                    'close_max': float(uncertainty_data['max'][i]),
-                    'close_min': float(uncertainty_data['min'][i]),
-                    'close_std': float(uncertainty_data['std'][i])
+                    'close_upper': up,
+                    'close_lower': lo,
+                    'close_max': mx,
+                    'close_min': mn,
+                    'close_std': max(0.0, sd)
                 })
             # 若提供 raw_df（调试模式），附加原始未约束的诊断列
             if raw_df is not None:

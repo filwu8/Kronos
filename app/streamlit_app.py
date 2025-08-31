@@ -111,13 +111,35 @@ API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
 # 注：如需新增样式，建议追加到 static/css/chinese_ui.css 或 static/css/local.css 中
 
 
-def check_api_health():
-    """检查API服务状态"""
+def check_api_health(max_retries: int = 10, delay_sec: float = 0.5) -> bool:
+    """检查API服务状态（带重试与候选地址）"""
+    import os, time
     try:
-        response = requests.get(f"{API_BASE_URL}/health", timeout=5)
-        return response.status_code == 200
-    except:
+        import requests  # 确保在函数内可用
+    except Exception:
         return False
+
+    base = os.getenv("API_BASE_URL", API_BASE_URL)
+    candidates = [base]
+    # 为兼容Windows/IPv6解析差异，尝试 127.0.0.1 备选
+    if isinstance(base, str) and "localhost" in base:
+        candidates.append(base.replace("localhost", "127.0.0.1"))
+
+    for url in candidates:
+        for _ in range(max_retries):
+            try:
+                r = requests.get(f"{url}/health", timeout=2)
+                if r.status_code == 200:
+                    # 记住可用的URL，后续接口沿用
+                    try:
+                        st.session_state['API_BASE_URL_ACTIVE'] = url
+                    except Exception:
+                        pass
+                    return True
+            except Exception:
+                pass
+            time.sleep(delay_sec)
+    return False
 
 
 def get_stock_prediction(stock_code, **params):
@@ -134,8 +156,9 @@ def get_stock_prediction(stock_code, **params):
         else:
             timeout_seconds = 180  # 标准模式：3分钟
 
+        base = st.session_state.get('API_BASE_URL_ACTIVE', API_BASE_URL)
         response = requests.post(
-            f"{API_BASE_URL}/predict",
+            f"{base}/predict",
             json=payload,
             timeout=timeout_seconds
         )
@@ -157,7 +180,8 @@ def get_stock_prediction(stock_code, **params):
 def get_stock_info(stock_code):
     """获取股票信息"""
     try:
-        response = requests.get(f"{API_BASE_URL}/stocks/{stock_code}/info", timeout=10)
+        base = st.session_state.get('API_BASE_URL_ACTIVE', API_BASE_URL)
+        response = requests.get(f"{base}/stocks/{stock_code}/info", timeout=10)
         if response.status_code == 200:
             return response.json()
         return None
@@ -603,11 +627,11 @@ def render_stock_prediction_content():
 
 
 
-    # 检查API状态
-    if not check_api_health():
-        st.error("⚠️ API服务不可用，请检查后端服务是否启动")
-        st.info("请确保运行: `python app/api.py` 或 `uvicorn app.api:app --host 0.0.0.0 --port 8000`")
-        return
+    # 检查API状态（容忍冷启动/重载，短时重试）
+    if not check_api_health(max_retries=12, delay_sec=0.5):
+        st.error("⚠️ API服务不可用，正在等待后端启动...")
+        st.info("请确保运行: python app/api.py 或 uvicorn app.api:app --host 0.0.0.0 --port 8000")
+        st.stop()
 
     # 侧边栏配置
     st.sidebar.header("📊 预测配置")
@@ -732,7 +756,7 @@ def render_stock_prediction_content():
     if st.sidebar.button("🔄 刷新该股票数据", type="secondary", use_container_width=True):
         try:
             import requests, os
-            api_base = os.getenv("API_BASE_URL", "http://localhost:8000")
+            api_base = st.session_state.get('API_BASE_URL_ACTIVE', os.getenv("API_BASE_URL", "http://localhost:8000"))
             r = requests.post(f"{api_base}/refresh/{stock_code}", params={"period": period}, timeout=30)
             if r.status_code == 200 and r.json().get('success'):
                 info = r.json()['data']
@@ -1106,6 +1130,32 @@ def render_stock_prediction_content():
                 }
                 pred_df = pred_df.rename(columns=uncertainty_columns)
 
+                # 调试字段中文化（仅在调试模式显示时重命名）
+                if debug_mode:
+                    raw_map = {
+                        'raw_open': '原始开盘 (诊断)',
+                        'raw_high': '原始最高 (诊断)',
+                        'raw_low':  '原始最低 (诊断)',
+                        'raw_close':'原始收盘 (诊断)'
+                    }
+                    pred_df = pred_df.rename(columns=raw_map)
+
+                # 在非调试模式下隐藏 raw_* 诊断列
+                if not debug_mode:
+                    pred_df = pred_df[[c for c in pred_df.columns if not str(c).startswith('raw_')]]
+
+                # 列顺序与选择：核心列 + 不确定性（可选） + 体量/派生
+                preferred_order = [
+                    '日期','开盘价 (元)','最高价 (元)','最低价 (元)','收盘价 (元)',
+                    '收盘上界 (元)','收盘下界 (元)','收盘标准差 (元)',
+                    '成交量 (手)','成交额 (万元)','涨跌幅 (%)'
+                ]
+                # 缩减到存在的列，按偏好排序
+                cols_present = [c for c in preferred_order if c in pred_df.columns]
+                # 后续追加其余列（调试模式下）
+                others = [c for c in pred_df.columns if c not in cols_present]
+                pred_df = pred_df[cols_present + others]
+
                 # 成交量单位自适应（两档）：手 / 万手（万手保留2位小数）
                 if '成交量 (手)' in pred_df.columns:
                     vol_max = float(pred_df['成交量 (手)'].max()) if len(pred_df) else 0.0
@@ -1117,7 +1167,7 @@ def render_stock_prediction_content():
                         pred_df['成交量 (手)'] = pred_df['成交量 (手)'].round(0).astype('Int64')
 
                 # 先保留数值，再在显示层格式化为两位小数
-                for col in ['开盘价 (元)', '最高价 (元)', '最低价 (元)', '收盘价 (元)']:
+                for col in ['开盘价 (元)', '最高价 (元)', '最低价 (元)', '收盘价 (元)', '收盘上界 (元)', '收盘下界 (元)', '收盘标准差 (元)']:
                     if col in pred_df.columns:
                         pred_df[col] = pd.to_numeric(pred_df[col], errors='coerce')
 

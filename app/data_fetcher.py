@@ -323,7 +323,6 @@ class AStockDataFetcher:
 
             # 合并并写缓存
             merged = old
-            $added_count_placeholder
             if inc is not None and len(inc) > 0:
                 added_count = int(len(inc))
                 merged = pd.concat([old[~old.index.isin(inc.index)], inc]).sort_index()
